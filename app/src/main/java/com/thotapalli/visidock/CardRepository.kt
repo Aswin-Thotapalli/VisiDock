@@ -15,6 +15,8 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.tasks.await
+import org.json.JSONArray
+import org.json.JSONObject
 
 data class Session(val uid: String, val email: String, val verified: Boolean, val displayName: String = "")
 interface CardRepository {
@@ -34,7 +36,8 @@ interface CardRepository {
 }
 
 fun Card.record(status: String = "ready") = mapOf(
-    "name" to name.trim(), "role" to role.trim(), "company" to company.trim(), "phone" to phone.trim(),
+    "name" to name.trim(), "role" to role.trim(), "company" to company.trim(), "phone" to contactPhones.firstOrNull()?.number.orEmpty(),
+    "phones" to contactPhones.map { mapOf("number" to it.number.trim(), "label" to it.label.trim()) },
     "email" to email.trim(), "address" to address.trim(), "website" to website.trim(), "notes" to notes,
     "rawText" to rawText, "imagePath" to imagePath, "originalPath" to originalPath,
     "favorite" to favorite, "createdAt" to createdAt, "status" to status,
@@ -45,7 +48,22 @@ fun cardFrom(id: String, data: Map<String, Any?>): Card {
     fun str(key: String) = data[key] as? String ?: ""
     return Card(id, str("name"), str("role"), str("company"), str("phone"), str("email"), str("address"),
         str("website"), str("notes"), str("rawText"), str("imagePath"), str("originalPath"),
-        data["favorite"] as? Boolean ?: false, (data["createdAt"] as? Number)?.toLong() ?: 0, str("backImagePath"), str("backOriginalPath"), str("backRawText"), str("sourceScanId"))
+        data["favorite"] as? Boolean ?: false, (data["createdAt"] as? Number)?.toLong() ?: 0, str("backImagePath"), str("backOriginalPath"), str("backRawText"), str("sourceScanId"),
+        phones = phoneNumbersFrom(data["phones"]))
+}
+
+/** Firestore returns lists/maps; SavedState JSON returns JSONArray/JSONObject. */
+private fun phoneNumbersFrom(value: Any?): List<PhoneNumber> {
+    val entries: List<*> = when (value) {
+        is List<*> -> value
+        is JSONArray -> (0 until value.length()).map { value.opt(it) }
+        else -> return emptyList()
+    }
+    return entries.mapNotNull { item ->
+        val number = when (item) { is Map<*, *> -> item["number"] as? String; is JSONObject -> item.opt("number") as? String; else -> null }
+        val label = when (item) { is Map<*, *> -> item["label"] as? String; is JSONObject -> item.opt("label") as? String; else -> null }
+        number?.trim()?.takeIf { it.isNotBlank() }?.let { PhoneNumber(number = it, label = label.orEmpty().trim()) }
+    }
 }
 
 class CloudRepository : CardRepository {

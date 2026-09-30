@@ -46,7 +46,8 @@ Without client configuration, the cloud build displays a setup screen. It does n
 
 - Integrated CameraX capture with a live framing guide, torch and front/back capture, plus JPEG/PNG/WebP import bounded to 20 MB. The guide is not automatic edge detection. Images are decoded at a bounded size off the main thread, with EXIF orientation applied.
 - Latin-script ML Kit OCR runs on-device and preserves text positions. The review screen retains original readings from both sides alongside editable fields and notes. Model proposals can be wrong and remain reviewable.
-- Cloud saves preserve each captured side’s original file and a separate 1600-pixel JPEG preview. Saved cards can flip between front and back. A scan containing multiple people can produce separately reviewed and saved records. Manual cards need no image.
+- Camera and gallery images pass through a four-corner crop review before recognition. Cloud saves contain the confirmed, perspective-corrected card JPEG and a separate 1600-pixel preview, for both sides. Corner placement is manual; uncropped gallery originals are left untouched. Saved cards can flip between front and back. A scan containing multiple people can produce separately reviewed and saved records. Manual cards need no image.
+- Phone numbers have separate editable rows and optional printed labels. All numbers survive cloud storage, draft restoration and Android Contacts export.
 - Saved-card editing, favorites and explicit duplicate warnings based on email/phone in the user's VisiDock collection.
 - Android contact editor handoff maps name, role, company, phone, email, address, website and notes. The user confirms Save in the contacts app. VisiDock does not read the phone contact list or silently write Google Contacts.
 - Email/password accounts, verification email, password reset, sign-out and password-confirmed account deletion are implemented. Live service verification is still required.

@@ -25,7 +25,8 @@ data class VaultState(
     val draftBackPreview: String? = null, val configured: Boolean = true,
     val remainingPeople: Int = 0, val extractionWarnings: List<String> = emptyList(), val visualModelReady: Boolean = false,
     val learningEnabled: Boolean = true, val learnedLabels: List<LearnedLabel> = emptyList(),
-    val savedEvent: Long = 0, val savedName: String = ""
+    val savedEvent: Long = 0, val savedName: String = "",
+    val cropPath:String?=null,val cropBack:Boolean=false
 )
 
 class VaultViewModel(application: Application, private val saved: SavedStateHandle) : AndroidViewModel(application) {
@@ -56,8 +57,13 @@ class VaultViewModel(application: Application, private val saved: SavedStateHand
                 val value=array.getJSONObject(i); cardFrom(value.getString("id"),value.keys().asSequence().associateWith {value.get(it)})
             } }
         }
-        update { it.copy(selectedId=saved["selected"], remainingPeople=pendingPeople.size, visualModelReady=visualModel.installed(), extractionWarnings=saved.get<ArrayList<String>>("extractionWarnings").orEmpty()) }
+        update { it.copy(cropPath=saved["cropSource"],cropBack=saved.get<Boolean>("cropBack") ?: false,selectedId=saved["selected"], remainingPeople=pendingPeople.size, visualModelReady=visualModel.installed(), extractionWarnings=saved.get<ArrayList<String>>("extractionWarnings").orEmpty()) }
         viewModelScope.launch(Dispatchers.IO) { ImagePipeline.cleanOld(application, setOfNotNull(saved["original"], saved["preview"], saved["camera"], saved["backOriginal"], saved["backPreview"])) }
+        viewModelScope.launch(Dispatchers.IO) {
+            val keep=saved.get<String>("cropSource")
+            val cutoff=System.currentTimeMillis()-24*60*60*1000
+            ImageCropper.directory(application).listFiles().orEmpty().filter {it.path!=keep && it.lastModified()<cutoff}.forEach {it.delete()}
+        }
         observe()
     }
     private fun observe() {
@@ -196,7 +202,9 @@ class VaultViewModel(application: Application, private val saved: SavedStateHand
         update { it.copy(draft=null, draftPreview=null, draftBackPreview=null) }
     }
     private fun clearFiles() {
-        listOf("original", "preview", "camera", "backOriginal", "backPreview").forEach { key -> saved.get<String>(key)?.let { File(it).delete() }; saved[key] = null }
+        listOf("original", "preview", "camera", "backOriginal", "backPreview", "cropSource").forEach { key -> saved.get<String>(key)?.let { File(it).delete() }; saved[key] = null }
+        saved["cropBack"] = null
+        update {it.copy(cropPath=null,cropBack=false)}
         saved["mime"] = null
         saved["backMime"] = null
         saved["draftOwner"] = null
@@ -208,11 +216,33 @@ class VaultViewModel(application: Application, private val saved: SavedStateHand
     }
     fun cameraResult(success: Boolean, back: Boolean = false) {
         val path = saved.get<String>("camera") ?: return
-        if (success) scanSide(Uri.fromFile(File(path)),back) else { File(path).delete(); saved["camera"] = null }
+        if (success) stageCrop(Uri.fromFile(File(path)),back) else { File(path).delete(); saved["camera"] = null }
+    }
+    fun stageCrop(uri:Uri,back:Boolean=false)=operation("Preparing photo…") {
+        require(!back || saved.get<String>("preview")!=null) {"Capture the front before adding the back."}
+        val source=try {withContext(Dispatchers.IO) {ImageCropper.stage(getApplication(),uri)}}
+        finally {saved.get<String>("camera")?.let {File(it).delete()};saved["camera"]=null}
+        saved.get<String>("cropSource")?.let {File(it).delete()}
+        saved["cropSource"]=source.path;saved["cropBack"]=back;saved["draftOwner"]=repository?.session()?.uid
+        update {it.copy(cropPath=source.path,cropBack=back)}
+    }
+    fun cancelCrop() {
+        if(state.value.busy!=null) return
+        saved.get<String>("cropSource")?.let {File(it).delete()};saved["cropSource"]=null;saved["cropBack"]=null
+        update {it.copy(cropPath=null,cropBack=false,error=null)}
+    }
+    fun useCrop(points:List<Float>)=operation("Cropping card…",180_000) {
+        val raw=File(checkNotNull(saved.get<String>("cropSource")))
+        val back=saved.get<Boolean>("cropBack") ?: false
+        val cropped=withContext(Dispatchers.IO) {ImageCropper.crop(getApplication(),raw,points)}
+        raw.delete();saved["cropSource"]=null;saved["cropBack"]=null
+        update {it.copy(cropPath=null,cropBack=false,busy="Reading the card on your device…")}
+        try {processScan(Uri.fromFile(cropped),back)} finally {cropped.delete()}
     }
     fun scan(uri: Uri) = scanSide(uri, false)
     fun scanBack(uri: Uri) = scanSide(uri, true)
-    private fun scanSide(uri: Uri, back: Boolean) = operation("Reading the card on your device…",180_000) {
+    private fun scanSide(uri: Uri, back: Boolean) = operation("Reading the card on your device…",180_000) {processScan(uri,back)}
+    private suspend fun processScan(uri:Uri,back:Boolean) {
         require(!back || saved.get<String>("preview")!=null) { "Capture the front before adding the back." }
         val files = try { ImagePipeline.scan(getApplication(), uri) }
         finally { saved.get<String>("camera")?.let { File(it).delete() }; saved["camera"] = null }

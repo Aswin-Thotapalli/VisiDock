@@ -1,6 +1,12 @@
 # Google Play internal testing
 
-## Current release: 0.3.1 / code 3
+## Current phone-testing candidate: 0.3.2 / code 4
+
+Use the local `artifacts/VisiDock-0.3.2-4-signed.aab` for the existing Play app, package `com.thotapalli.visidock`. The original upload certificate is retained. Build, lint, 48 release unit tests, 48 demo unit tests, signature, bundle and native alignment checks passed. Android behavior remains unverified because three emulator runs timed out before executing tests; the user chose phone testing. See [Release-0.3.2.md](Release-0.3.2.md) for the checksum and limitations.
+
+Do not upload the AAB to GitHub: client API keys are embedded in Android binaries. Keep it local for Google Play upload.
+
+## Previous release: 0.3.1 / code 3
 
 Package **com.thotapalli.visidock**. Signed bundle: `artifacts/VisiDock-0.3.1-3-signed.aab` (105,384,829 bytes).
 
@@ -17,7 +23,7 @@ Google Play App Signing signs the device APKs generated from this upload-key-sig
 - `VisiDock-0.3.0-2-signed.aab`: previously shared code 2 candidate, retained with its checksum; see [Release-0.3.0.md](Release-0.3.0.md).
 - `VisiDock-0.2.0-1-signed.aab`: initial code 1 release, retained with its checksum.
 
-Use the current code 3 bundle for this update, not either historical artifact.
+Use the code 4 candidate for this update. The older bundles are retained locally as history.
 
 ## Signing material
 
@@ -34,7 +40,7 @@ Private files are in `signing/`, protected by Windows permissions and excluded f
 From the project folder:
 
 ```powershell
-.\scripts\Build-Release.ps1 -VersionCode 4 -VersionName 0.3.2
+.\scripts\Build-Release.ps1 -VersionCode 5 -VersionName 0.3.3
 ```
 
 Each uploaded release needs a version code greater than every previously uploaded one. The script refuses to overwrite an existing artifact, builds the cloud release, runs release unit tests and lint, verifies the JAR signature and writes an AAB plus SHA-256 checksum. Upload each new AAB to the same Play app and testing track. Google Play creates architecture-specific installs from the bundle.

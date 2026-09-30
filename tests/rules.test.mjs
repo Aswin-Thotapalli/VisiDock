@@ -28,6 +28,23 @@ test('owner can create, read and edit a valid card', async () => {
   await assertSucceeds(getDoc(target));
   await assertSucceeds(updateDoc(target,{notes:'Updated'}));
 });
+test('optional labeled phone lists preserve legacy clients and enforce every entry', async () => {
+  const target=doc(db('alice'),'users/alice/cards/one');
+  await assertSucceeds(setDoc(target,card())); // Old documents have no list.
+  const phones=[{number:'+91 98765 43210',label:'Mobile'},{number:'040 2345 6789',label:'Office'},{number:'1800 123 456',label:'Support'}];
+  await assertSucceeds(updateDoc(target,{phones,phone:phones[0].number}));
+  await assertSucceeds(updateDoc(target,{phones:Array.from({length:12},(_,i)=>({number:String(i%10).repeat(80),label:'x'.repeat(40)}))}));
+  const full=doc(db('alice'),'users/alice/cards/full');
+  await assertSucceeds(setDoc(full,{...card('alice','full'),phones:Array(12).fill(phones[0]),backImagePath:'users/alice/cards/full/back-preview.jpg',backOriginalPath:'users/alice/cards/full/back-original',sourceScanId:'11111111-1111-1111-1111-111111111111'}));
+  await assertSucceeds(updateDoc(full,{notes:'All twelve numbers and both sides remain editable'}));
+  for(const values of ['not-a-list',{},null,Array(13).fill(phones[0]),[{number:'',label:''}],[{number:'x'.repeat(81),label:''}],[{number:'123',label:'x'.repeat(41)}],[{number:123,label:''}],[{number:'123',label:1}],[{number:'123'}],[{number:'123',label:'',extra:true}],['123'],[null]]) {
+    await assertFails(updateDoc(target,{phones:values}));
+  }
+  // Invalid data in the last allowed slot must not bypass validation.
+  await assertFails(updateDoc(target,{phones:[...Array(11).fill(phones[0]),{number:'123',label:42}]}));
+  await assertSucceeds(updateDoc(target,{phones:[],phone:''}));
+  await assertFails(updateDoc(target,{phone:'x'.repeat(101)}));
+});
 test('another user cannot read, write or delete the owner card', async () => {
   await setDoc(doc(db('alice'),'users/alice/cards/one'),card());
   const target=doc(db('bob'),'users/alice/cards/one');

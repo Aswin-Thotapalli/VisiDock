@@ -1,5 +1,14 @@
 # Verification
 
+## Version 0.3.2 / code 4 — candidate, 30 September 2026
+
+- Release and demo builds succeeded. All 48 release JVM tests and 48 demo JVM tests passed, including separate-phone extraction, migration, JSON round trips, secondary-phone learning, complete address parsing, footer evidence retention and JSON completion boundaries. Release lint passed.
+- Fifteen Firestore rule tests passed and the optional phone-list rules were deployed, including maximum-length entries and a full twelve-number, two-sided document.
+- Local signed AAB: `artifacts/VisiDock-0.3.2-4-signed.aab`, 105,419,001 bytes. SHA-256 `b4c95ba3b7c8d448dff7309488644462fd455514f98e816994071b5c0ccdd920`. All 727 payload entries match the existing upload certificate; bundletool and all 16 native 16 KB alignment checks passed.
+- Android checks remain **unverified**. The full suite, installed-build retry and focused crop/phone retry each ended in a process-startup ANR before tests ran. The host was under 96–99% memory load, and Android's launcher also reported an ANR. The failure logs do not establish an app regression or prove that the implementation works. A successful device run is still required. No new model latency or image-accuracy result is claimed.
+- Evidence: `.tools/v032-final-build.log`, `.tools/final-v032-device.log`, `.tools/v032-device-retry.log`, `.tools/v032-crop-device.log`, `.tools/v032-final-startup-failure.log`, `.tools/v032-signature.log`, `.tools/v032-bundle-validation.log`, `.tools/v032-alignment.json`.
+- Client config and generated auth JavaScript were removed from GitHub's current branch and release tag; the old AAB release attachment was removed. The former commit is still retrievable by exact ID on GitHub and needs a server-side Support purge. No API key rotation was performed. Local client config remains intact, and future AABs stay local. A staged-source privacy check and CI guard prevent these files/key patterns being recommitted.
+
 ## Version 0.3.1 / code 3 — 30 September 2026
 
 - Final release build, lint and all 36 release JVM tests pass. The demo build and 36 demo JVM tests also pass, including company-only cards, whole-token grounding and conflicting learning labels.

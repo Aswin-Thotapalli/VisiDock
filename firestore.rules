@@ -2,30 +2,48 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
     function owner(uid) { return request.auth != null && request.auth.uid == uid; }
+    function text(value, limit) { return value is string && value.size() <= limit; }
+    function validPhone(p) {
+      return p.keys().hasOnly(['number','label'])
+        && p.number.matches('(?s).{1,80}') && p.label.matches('(?s).{0,40}');
+    }
+    function validPhones(values) {
+      let count = values.size();
+      return values is list && count <= 12
+        && (count < 1 || validPhone(values[0])) && (count < 2 || validPhone(values[1]))
+        && (count < 3 || validPhone(values[2])) && (count < 4 || validPhone(values[3]))
+        && (count < 5 || validPhone(values[4])) && (count < 6 || validPhone(values[5]))
+        && (count < 7 || validPhone(values[6])) && (count < 8 || validPhone(values[7]))
+        && (count < 9 || validPhone(values[8])) && (count < 10 || validPhone(values[9]))
+        && (count < 11 || validPhone(values[10])) && (count < 12 || validPhone(values[11]));
+    }
     function valid(uid, id) {
       let d = request.resource.data;
-      return d.keys().hasOnly(['name','role','company','phone','email','address','website','notes','rawText','imagePath','originalPath','favorite','createdAt','status','uploadStartedAt','backImagePath','backOriginalPath','backRawText','sourceScanId'])
+      let phones = d.get('phones', []);
+      let prefix = 'users/' + uid + '/cards/' + id + '/';
+      return d.keys().hasOnly(['name','role','company','phone','phones','email','address','website','notes','rawText','imagePath','originalPath','favorite','createdAt','status','uploadStartedAt','backImagePath','backOriginalPath','backRawText','sourceScanId'])
         && d.keys().hasAll(['name','role','company','phone','email','address','website','notes','rawText','imagePath','originalPath','favorite','createdAt','status'])
-        && d.get('sourceScanId','') is string && d.get('sourceScanId','').size() <= 36
-        && d.name is string && d.name.size() <= 200
-        && d.role is string && d.role.size() <= 300
-        && d.company is string && d.company.size() <= 300
+        && text(d.get('sourceScanId',''),36)
+        && text(d.name,200)
+        && text(d.role,300)
+        && text(d.company,300)
         && (d.name.size() > 0 || d.company.size() > 0)
-        && d.phone is string && d.phone.size() <= 100
-        && d.email is string && d.email.size() <= 300
-        && d.address is string && d.address.size() <= 1000
-        && d.website is string && d.website.size() <= 300
-        && d.notes is string && d.notes.size() <= 4000
-        && d.rawText is string && d.rawText.size() <= 12000
-        && d.get('backRawText','') is string && d.get('backRawText','').size() <= 12000
-        && ((d.get('backImagePath','') == '' && d.get('backOriginalPath','') == '') || (d.get('backImagePath','') == 'users/' + uid + '/cards/' + id + '/back-preview.jpg' && d.get('backOriginalPath','') == 'users/' + uid + '/cards/' + id + '/back-original'))
+        && text(d.phone,100)
+        && validPhones(phones)
+        && text(d.email,300)
+        && text(d.address,1000)
+        && text(d.website,300)
+        && text(d.notes,4000)
+        && text(d.rawText,12000)
+        && text(d.get('backRawText',''),12000)
+        && ((d.get('backImagePath','') == '' && d.get('backOriginalPath','') == '') || (d.get('backImagePath','') == prefix + 'back-preview.jpg' && d.get('backOriginalPath','') == prefix + 'back-original'))
         && d.favorite is bool && d.createdAt is int && d.createdAt > 0
         && d.createdAt <= request.time.toMillis() + 300000
         && d.status in ['uploading','ready','deleting']
         && (!('uploadStartedAt' in d) || (d.uploadStartedAt is int && d.uploadStartedAt > 0 && d.uploadStartedAt <= request.time.toMillis() + 300000))
         && ((d.imagePath == '' && d.originalPath == '') ||
-          (d.imagePath == 'users/' + uid + '/cards/' + id + '/preview.jpg'
-          && d.originalPath == 'users/' + uid + '/cards/' + id + '/original'));
+          (d.imagePath == prefix + 'preview.jpg'
+          && d.originalPath == prefix + 'original'));
     }
     match /users/{uid}/cards/{id} {
       allow read: if owner(uid);

@@ -4,6 +4,21 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class CardLogicTest {
+    @Test fun preservesThreeIndependentPhoneNumbers() {
+        val card = CardLogic.extract("Mira Sen\nExample Labs\n040 23456789; 040 23456790\n+91 98765 43210")
+        assertEquals(3, card.contactPhones.size)
+        assertEquals(1, CardLogic.search(listOf(card), "23456790").size)
+        assertEquals(1, CardLogic.duplicates(card.copy(id="new"), listOf(Card(id="old", phone="040 23456790"))).size)
+        assertNotNull(CardLogic.validate(card.copy(phones=listOf(PhoneNumber("12345678; 87654321")))))
+    }
+    @Test fun secondaryPhoneCorrectionsUseOnlyPrintedEvidence() {
+        val proposed = Card(name="Mira", rawText="Mira\n040 23456789\n040 23456790", phones=listOf(PhoneNumber("040 23456789")))
+        val corrected = proposed.copy(phones=proposed.phones + PhoneNumber("040 23456790"))
+        assertEquals(listOf("040 23456790"), CorrectionPolicy.learn(proposed, corrected).map { it.phrase })
+        assertTrue(CorrectionPolicy.learn(proposed, proposed.copy(phones=listOf(PhoneNumber("99999999")))).isEmpty())
+        assertTrue(CorrectionPolicy.learn(proposed, corrected.copy(name="040 23456790")).none { it.field=="name" })
+        assertEquals(listOf(PhoneNumber("04023456789/90")), splitPhoneNumbers("04023456789/90"))
+    }
     @Test fun companyOnlyCardKeepsPersonNameEmpty() {
         val card=Card(company="Northline Studio")
         assertNull(CardLogic.validate(card))

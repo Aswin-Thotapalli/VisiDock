@@ -12,6 +12,7 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.flow.takeWhile
 
 class VisualReadingUnavailableException(message:String,cause:Throwable?=null):IllegalStateException(message,cause)
 
@@ -135,20 +136,30 @@ class VisualModel(private val context: Context) {
                 val contents = mutableListOf<Content>(Content.Text("Front of card:"), Content.ImageFile(front.path))
                 back?.let { contents += Content.Text("Back of the SAME card:"); contents += Content.ImageFile(it.path) }
                 val frontBudget=if(back==null) 2000 else 1000
-                val boundedFront=frontText.take(frontBudget)
-                val boundedBack=if(back==null) "" else backText.take(1000)
+                val boundedFront=VisualExtraction.boundedOcr(frontText,frontBudget)
+                val boundedBack=if(back==null) "" else VisualExtraction.boundedOcr(backText,1000)
                 contents += Content.Text("OCR evidence (may contain errors):\nFRONT:\n$boundedFront\nBACK:\n$boundedBack")
                 if(localHints.isNotBlank()) contents += Content.Text(localHints.take(600))
                 val result = StringBuilder()
+                var completeJson:String?=null
                 var firstResponse=true
                 try {
-                    conversation.sendMessageAsync(Contents.of(contents)).collect { chunk ->
+                    conversation.sendMessageAsync(Contents.of(contents)).takeWhile { chunk ->
+                        currentCoroutineContext().ensureActive()
                         if(firstResponse) {stage("first_response");firstResponse=false}
                         result.append(chunk.contents.contents.filterIsInstance<Content.Text>().joinToString("") { it.text })
                         check(result.length <= 32_000) { "The visual result was too long." }
-                    }
-                } finally { conversation.cancelProcess() }
-                VisualExtraction.parse(result.toString(), frontText, backText)
+                        completeJson=VisualExtraction.completedJson(result.toString())
+                        completeJson==null
+                    }.collect {}
+                } finally {
+                    // Closing the SDK flow alone does not cancel native generation (its awaitClose is empty).
+                    // Cleanup failure must not replace coroutine cancellation or the original inference error.
+                    runCatching { conversation.cancelProcess() }
+                }
+                currentCoroutineContext().ensureActive()
+                stage("json_complete")
+                VisualExtraction.parse(completeJson ?: result.toString(), frontText, backText)
             }
             }
             stage("completed")

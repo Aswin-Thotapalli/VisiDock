@@ -71,7 +71,7 @@ private val destinations = listOf(Destination("Collection", Icons.Outlined.Style
     var query by rememberSaveable { mutableStateOf("") }
     var add by rememberSaveable { mutableStateOf(false) }
     var discard by rememberSaveable { mutableStateOf(false) }
-    val gallery = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { it?.let(vm::scan) }
+    val gallery = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { it?.let {uri->vm.stageCrop(uri)} }
     var capture by rememberSaveable { mutableStateOf<Boolean?>(null) }
     LaunchedEffect(state.message) { state.message?.let {
         // Confirmed saves already have their own visual receipt; avoid duplicate overlays.
@@ -85,6 +85,12 @@ private val destinations = listOf(Destination("Collection", Icons.Outlined.Style
     if(capture!=null) {
         val back=capture==true
         CaptureScreen(back, vm::cameraFile, { success -> vm.cameraResult(success,back); if(success) capture=null }, {vm.cameraResult(false); capture=null})
+        return
+    }
+    state.cropPath?.let {path ->
+        CropScreen(path,state.cropBack,state.busy!=null,state.error,vm::useCrop,vm::cancelCrop,{
+            val back=state.cropBack;vm.cancelCrop();capture=back
+        })
         return
     }
     SharedTransitionLayout {
@@ -145,7 +151,7 @@ private val destinations = listOf(Destination("Collection", Icons.Outlined.Style
                                 VerticalDivider()
                                 Box(Modifier.weight(1f).fillMaxHeight()) {
                                     if(selected != null) DetailScreen(selected, vm, state.busy != null, onBack={vm.select(null)})
-                                    else EmptyState(Icons.Outlined.Badge, "A little context.\nA lasting connection.", "Select a card to see the person, the details and where your paths crossed.", Modifier.align(Alignment.Center))
+                                    else EmptyState(Icons.Outlined.Badge, "Card details", "Select a card to view its details and photographs.", Modifier.align(Alignment.Center))
                                 }
                             }
                         }
@@ -157,18 +163,18 @@ private val destinations = listOf(Destination("Collection", Icons.Outlined.Style
     }
     if(state.busy!=null && state.draftPreview!=null && !state.busy!!.startsWith("Downloading") && (state.busy!!.contains("Reading",ignoreCase=true) || state.busy!!.contains("Identifying",ignoreCase=true))) ReadingStage(state.draftPreview!!,state.busy!!,vm::cancelOperation)
     AnimatedVisibility(celebration,enter=fadeIn(tween(140))+slideInVertically(tween(260)) {-it/2},exit=fadeOut(tween(180))) {
-        Box(Modifier.fillMaxWidth().statusBarsPadding().padding(16.dp),contentAlignment=Alignment.TopCenter) {Surface(color=MaterialTheme.colorScheme.primaryContainer,shape=MaterialTheme.shapes.large) {Row(Modifier.padding(horizontal=20.dp,vertical=14.dp),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(12.dp)) {Icon(Icons.Outlined.CheckCircle,null);Column {Text("Connection kept.",style=MaterialTheme.typography.titleMedium);Text(state.savedName,style=MaterialTheme.typography.bodyMedium)}}}}
+        Box(Modifier.fillMaxWidth().statusBarsPadding().padding(16.dp),contentAlignment=Alignment.TopCenter) {Surface(color=MaterialTheme.colorScheme.primaryContainer,shape=MaterialTheme.shapes.large) {Row(Modifier.padding(horizontal=20.dp,vertical=14.dp),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(12.dp)) {Icon(Icons.Outlined.CheckCircle,null);Column {Text("Card saved",style=MaterialTheme.typography.titleMedium);Text(state.savedName,style=MaterialTheme.typography.bodyMedium)}}}}
     }
     if(add) ModalBottomSheet(onDismissRequest={add=false}) {
         Column(Modifier.fillMaxWidth().padding(horizontal=24.dp).padding(bottom=32.dp), verticalArrangement=Arrangement.spacedBy(8.dp)) {
-            Text("Keep the connection", style=MaterialTheme.typography.headlineMedium)
-            Text("Capture a card. Add the context that matters.", color=MaterialTheme.colorScheme.onSurfaceVariant, modifier=Modifier.padding(bottom=16.dp))
+            Text("Add a card", style=MaterialTheme.typography.headlineMedium)
+            Text("Scan a card, import a photo or enter details.", color=MaterialTheme.colorScheme.onSurfaceVariant, modifier=Modifier.padding(bottom=16.dp))
             ActionRow(Icons.Outlined.PhotoCamera, "Take a photo", "Use your camera to capture a visiting card") {
                 add=false
                 capture=false
             }
             ActionRow(Icons.Outlined.Image, "Import an image", "Choose a JPEG, PNG or WebP, up to 20 MB") { add=false; gallery.launch("image/*") }
-            ActionRow(Icons.Outlined.Edit, "Enter details", "Save a connection without a card photo") { add=false; vm.newCard() }
+            ActionRow(Icons.Outlined.Edit, "Enter details", "Add details without a photograph") { add=false; vm.newCard() }
         }
     }
     if(discard) AlertDialog(onDismissRequest={discard=false}, title={Text("Discard your changes?")}, text={Text("The unsaved details and photo will be removed from this device.")},
@@ -201,13 +207,13 @@ private val destinations = listOf(Destination("Collection", Icons.Outlined.Style
             Text("VisiDock", Modifier.padding(start=8.dp).weight(1f), style=MaterialTheme.typography.titleLarge)
             if(BuildConfig.DEMO) SuggestionChip(onClick={}, label={Text("Demo")})
         }
-        Text(if(favorites) "Keep them close." else state.session?.displayName?.takeIf {it.isNotBlank()}?.let {"Your next conversation, ${it.substringBefore(' ')}."} ?: "Your next conversation.", Modifier.padding(horizontal=24.dp), style=if(compactHeader) MaterialTheme.typography.titleLarge else MaterialTheme.typography.headlineLarge,maxLines=2,overflow=TextOverflow.Ellipsis)
-        if(!compactHeader) Text(if(favorites) "Your people, a little easier to find." else if(state.cards.isEmpty()) "Good meetings deserve a second chapter." else "${state.cards.size} people. Plenty to pick up on.", Modifier.padding(horizontal=24.dp, vertical=8.dp), color=MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(if(favorites) "Favorites" else state.session?.displayName?.takeIf {it.isNotBlank()}?.let {"${it.substringBefore(' ')}’s cards"} ?: "Cards", Modifier.padding(horizontal=24.dp), style=if(compactHeader) MaterialTheme.typography.titleLarge else MaterialTheme.typography.headlineLarge,maxLines=2,overflow=TextOverflow.Ellipsis)
+        if(!compactHeader) Text(if(favorites) "${state.cards.count {it.favorite}} saved favorites" else "${state.cards.size} saved cards", Modifier.padding(horizontal=24.dp, vertical=8.dp), color=MaterialTheme.colorScheme.onSurfaceVariant)
         OutlinedTextField(query, onQuery, Modifier.fillMaxWidth().padding(horizontal=24.dp, vertical=12.dp), singleLine=true,
-            shape=MaterialTheme.shapes.large, leadingIcon={Icon(Icons.Outlined.Search, null)}, placeholder={Text("Name, company or a memory…",maxLines=1,overflow=TextOverflow.Ellipsis)},
+            shape=MaterialTheme.shapes.large, leadingIcon={Icon(Icons.Outlined.Search, null)}, placeholder={Text("Search names, companies or notes",maxLines=1,overflow=TextOverflow.Ellipsis)},
             trailingIcon={if(query.isNotEmpty()) IconButton(onClick={onQuery("")}) {Icon(Icons.Outlined.Close, "Clear search")}},
             keyboardOptions=KeyboardOptions(imeAction=ImeAction.Search))
-        if(query.isNotBlank()) Text(when {searching -> "Finding connections on your device…"; unavailable -> "Smart search unavailable · showing keyword matches"; semantic -> "On-device smart search · related matches may vary"; else -> "Matching card details and notes"}, Modifier.padding(horizontal=24.dp).padding(bottom=8.dp).semantics {liveRegion=LiveRegionMode.Polite}, style=MaterialTheme.typography.bodySmall, color=MaterialTheme.colorScheme.onSurfaceVariant)
+        if(query.isNotBlank()) Text(when {searching -> "Searching on your device…"; unavailable -> "Smart search unavailable · showing keyword matches"; semantic -> "On-device smart search · related matches may vary"; else -> "Matching card details and notes"}, Modifier.padding(horizontal=24.dp).padding(bottom=8.dp).semantics {liveRegion=LiveRegionMode.Polite}, style=MaterialTheme.typography.bodySmall, color=MaterialTheme.colorScheme.onSurfaceVariant)
         Row(Modifier.fillMaxWidth().padding(horizontal=24.dp, vertical=12.dp), horizontalArrangement=Arrangement.SpaceBetween) {
             Text(if(query.isNotBlank()) "Search results" else if(favorites) "Favorites" else "Your collection", style=MaterialTheme.typography.titleMedium)
             Text("${results.size} ${if(results.size==1) "card" else "cards"}", color=MaterialTheme.colorScheme.onSurfaceVariant, style=MaterialTheme.typography.bodyMedium)
@@ -215,8 +221,8 @@ private val destinations = listOf(Destination("Collection", Icons.Outlined.Style
         when {
             state.loading -> Column(Modifier.padding(24.dp), verticalArrangement=Arrangement.spacedBy(24.dp)) { repeat(4) { Surface(Modifier.fillMaxWidth().height(70.dp), color=MaterialTheme.colorScheme.surfaceVariant, shape=MaterialTheme.shapes.medium) {} } }
             results.isEmpty() -> EmptyState(if(query.isNotBlank()) Icons.Outlined.SearchOff else Icons.Outlined.Style,
-                if(query.isNotBlank()) "No connections found" else if(favorites) "Keep your go-to people close" else "Your next conversation starts here.",
-                if(query.isNotBlank()) "Try fewer words, a company name or something you wrote in your notes." else if(favorites) "Tap the star on a card to keep it here." else "Add your first visiting card. We’ll help you remember the person behind it.",
+                if(query.isNotBlank()) "No matching cards" else if(favorites) "No favorites yet" else "No cards yet",
+                if(query.isNotBlank()) "Try fewer words, a company name or something you wrote in your notes." else if(favorites) "Tap the star on a card to keep it here." else "Scan a visiting card or enter its details.",
                 Modifier.weight(1f), action=if(!favorites && query.isBlank()) onAdd else null, actionLabel="Add your first card")
             else -> LazyColumn(Modifier.weight(1f), contentPadding=PaddingValues(start=24.dp, end=24.dp, bottom=104.dp)) {
                 items(results, key={it.id}) { card ->
@@ -242,7 +248,7 @@ private val destinations = listOf(Destination("Collection", Icons.Outlined.Style
                 if(card.imagePath.isBlank()) Avatar(card,48)
                 Column(Modifier.weight(1f),verticalArrangement=Arrangement.spacedBy(4.dp)) {
                     Text(card.displayLabel,style=MaterialTheme.typography.titleLarge,maxLines=2,overflow=TextOverflow.Ellipsis)
-                    Text(listOf(card.role,card.company.takeIf {card.name.isNotBlank()}.orEmpty()).filter(String::isNotBlank).joinToString(" · ").ifBlank {if(card.name.isBlank()) "Company card" else "A new thread to follow."},style=MaterialTheme.typography.bodyMedium,color=MaterialTheme.colorScheme.onSurfaceVariant,maxLines=2,overflow=TextOverflow.Ellipsis)
+                    Text(listOf(card.role,card.company.takeIf {card.name.isNotBlank()}.orEmpty()).filter(String::isNotBlank).joinToString(" · ").ifBlank {if(card.name.isBlank()) "Company card" else "Contact details"},style=MaterialTheme.typography.bodyMedium,color=MaterialTheme.colorScheme.onSurfaceVariant,maxLines=2,overflow=TextOverflow.Ellipsis)
                     if(card.notes.isNotBlank()) Text(card.notes,style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant,maxLines=1,overflow=TextOverflow.Ellipsis)
                 }
                 IconToggleButton(checked=card.favorite,onCheckedChange={onFavorite()},enabled=!busy) {Icon(if(card.favorite) Icons.Outlined.Star else Icons.Outlined.StarOutline,if(card.favorite) "Remove ${card.displayLabel} from favorites" else "Favorite ${card.displayLabel}",tint=MaterialTheme.colorScheme.primary)}
@@ -352,7 +358,7 @@ private val destinations = listOf(Destination("Collection", Icons.Outlined.Style
     var deleting by rememberSaveable(card.id) { mutableStateOf(false) }
     var contact by rememberSaveable(card.id) { mutableStateOf(false) }
     Column(Modifier.fillMaxSize()) {
-        TopAppBar(title={Text("Connection")}, navigationIcon={IconButton(onClick=onBack) {Icon(Icons.AutoMirrored.Outlined.ArrowBack,"Back to collection")}}, actions={
+        TopAppBar(title={Text("Card details")}, navigationIcon={IconButton(onClick=onBack) {Icon(Icons.AutoMirrored.Outlined.ArrowBack,"Back to collection")}}, actions={
             IconButton(enabled=!busy, onClick={vm.favorite(card)}) {Icon(if(card.favorite) Icons.Outlined.Star else Icons.Outlined.StarOutline, "Toggle favorite")}
             IconButton(enabled=!busy, onClick={vm.edit(card)}) {Icon(Icons.Outlined.Edit,"Edit card")}
         })
@@ -364,7 +370,19 @@ private val destinations = listOf(Destination("Collection", Icons.Outlined.Style
                 OutlinedButton(enabled=!busy, onClick={vm.edit(card)}) {Text("Edit details")}
             }
             HorizontalDivider()
-            listOf("Phone" to card.phone, "Email" to card.email, "Website" to card.website, "Address" to card.address).filter {it.second.isNotBlank()}.forEach { (label,value) ->
+            card.contactPhones.forEachIndexed { index, phone ->
+                Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(12.dp)) {
+                    Column(Modifier.weight(1f),verticalArrangement=Arrangement.spacedBy(4.dp)) {
+                        Text(phone.label.ifBlank {"Phone ${index+1}"},style=MaterialTheme.typography.labelMedium,color=MaterialTheme.colorScheme.onSurfaceVariant)
+                        androidx.compose.foundation.text.selection.SelectionContainer {Text(phone.number,style=MaterialTheme.typography.bodyLarge)}
+                    }
+                    IconButton(onClick={
+                        if(phone.number.trim().matches(Regex("[+0-9() .-]+"))) runCatching {context.startActivity(Intent(Intent.ACTION_DIAL,Uri.fromParts("tel",phone.number.filter {it.isDigit() || it=='+'},null)))}.onFailure {vm.report("No dialer is available on this device.")}
+                        else vm.report("Check this phone number before opening it.")
+                    }) {Icon(Icons.Outlined.Call,"Call ${phone.label.ifBlank {"phone ${index+1}"}} ${phone.number}")}
+                }
+            }
+            listOf("Email" to card.email, "Website" to card.website, "Address" to card.address).filter {it.second.isNotBlank()}.forEach { (label,value) ->
                 Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(12.dp)) {
                     Column(Modifier.weight(1f),verticalArrangement=Arrangement.spacedBy(4.dp)) {Text(label,style=MaterialTheme.typography.labelMedium,color=MaterialTheme.colorScheme.onSurfaceVariant); androidx.compose.foundation.text.selection.SelectionContainer {Text(value,style=MaterialTheme.typography.bodyLarge)} }
                     IconButton(onClick={
@@ -382,7 +400,7 @@ private val destinations = listOf(Destination("Collection", Icons.Outlined.Style
                 }
             }
             Surface(color=MaterialTheme.colorScheme.surfaceVariant, shape=MaterialTheme.shapes.medium) {
-                Column(Modifier.fillMaxWidth().padding(20.dp), verticalArrangement=Arrangement.spacedBy(8.dp)) {Text("Where you left off",style=MaterialTheme.typography.titleMedium); Text(card.notes.ifBlank {"Where did you meet? Add a note to remember the moment."},color=MaterialTheme.colorScheme.onSurfaceVariant) }
+                Column(Modifier.fillMaxWidth().padding(20.dp), verticalArrangement=Arrangement.spacedBy(8.dp)) {Text("Notes",style=MaterialTheme.typography.titleMedium); Text(card.notes.ifBlank {"No notes added."},color=MaterialTheme.colorScheme.onSurfaceVariant) }
             }
             if(card.rawText.isNotBlank() || card.backRawText.isNotBlank()) { var show by rememberSaveable(card.id) {mutableStateOf(false)}
                 TextButton(onClick={show=!show}) {Text(if(show) "Hide recognized text" else "View recognized text"); Icon(if(show) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,null)}
@@ -396,12 +414,27 @@ private val destinations = listOf(Destination("Collection", Icons.Outlined.Style
     if(contact) AlertDialog(onDismissRequest={contact=false},title={Text("Add to your phone contacts?")},text={Text("Your contacts app opens for review. Choose the destination account and check for an existing contact before saving. VisiDock does not read your phone contacts.")},confirmButton={TextButton(onClick={
         contact=false
         val intent=Intent(Intent.ACTION_INSERT, ContactsContract.Contacts.CONTENT_URI).apply {
-            putExtra(ContactsContract.Intents.Insert.NAME,card.name); putExtra(ContactsContract.Intents.Insert.PHONE,card.phone)
+            putExtra(ContactsContract.Intents.Insert.NAME,card.name)
             putExtra(ContactsContract.Intents.Insert.EMAIL,card.email); putExtra(ContactsContract.Intents.Insert.COMPANY,card.company)
             putExtra(ContactsContract.Intents.Insert.JOB_TITLE,card.role); putExtra(ContactsContract.Intents.Insert.POSTAL,card.address)
             putExtra(ContactsContract.Intents.Insert.NOTES,card.notes)
-            val data=arrayListOf(android.content.ContentValues().apply {put(ContactsContract.Data.MIMETYPE,ContactsContract.CommonDataKinds.Website.CONTENT_ITEM_TYPE);put(ContactsContract.CommonDataKinds.Website.URL,card.website)})
-            if(card.website.isNotBlank()) putParcelableArrayListExtra(ContactsContract.Intents.Insert.DATA,data)
+            val data=arrayListOf<android.content.ContentValues>()
+            card.contactPhones.forEach { phone -> data.add(android.content.ContentValues().apply {
+                put(ContactsContract.Data.MIMETYPE,ContactsContract.CommonDataKinds.Phone.CONTENT_ITEM_TYPE)
+                put(ContactsContract.CommonDataKinds.Phone.NUMBER,phone.number)
+                val type=when(phone.label.trim().lowercase()) {
+                    "mobile","cell","cellular" -> ContactsContract.CommonDataKinds.Phone.TYPE_MOBILE
+                    "work","office" -> ContactsContract.CommonDataKinds.Phone.TYPE_WORK
+                    "home" -> ContactsContract.CommonDataKinds.Phone.TYPE_HOME
+                    "fax","work fax" -> ContactsContract.CommonDataKinds.Phone.TYPE_FAX_WORK
+                    "" -> ContactsContract.CommonDataKinds.Phone.TYPE_OTHER
+                    else -> ContactsContract.CommonDataKinds.Phone.TYPE_CUSTOM
+                }
+                put(ContactsContract.CommonDataKinds.Phone.TYPE,type)
+                if(type==ContactsContract.CommonDataKinds.Phone.TYPE_CUSTOM) put(ContactsContract.CommonDataKinds.Phone.LABEL,phone.label)
+            }) }
+            if(card.website.isNotBlank()) data.add(android.content.ContentValues().apply {put(ContactsContract.Data.MIMETYPE,ContactsContract.CommonDataKinds.Website.CONTENT_ITEM_TYPE);put(ContactsContract.CommonDataKinds.Website.URL,card.website)})
+            if(data.isNotEmpty()) putParcelableArrayListExtra(ContactsContract.Intents.Insert.DATA,data)
         }
         runCatching {context.startActivity(intent)}.onFailure {vm.report("No contacts app is available on this device.")}
     }) {Text("Open contacts")}},dismissButton={TextButton(onClick={contact=false}) {Text("Cancel")}})
@@ -414,16 +447,16 @@ private val destinations = listOf(Destination("Collection", Icons.Outlined.Style
     val duplicate=CardLogic.duplicates(card,state.cards)
     val focus=LocalFocusManager.current
     val keyboard=LocalSoftwareKeyboardController.current
-    val backGallery = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { it?.let(vm::scanBack) }
+    val backGallery = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { it?.let {uri->vm.stageCrop(uri,true)} }
     Column(Modifier.fillMaxSize().imePadding()) {
-        TopAppBar(title={Text(if(existing) "Edit connection" else "Review your card",maxLines=1,overflow=TextOverflow.Ellipsis)},navigationIcon={IconButton(enabled=!busy,onClick=onBack) {Icon(Icons.AutoMirrored.Outlined.ArrowBack,"Cancel editing")}},actions={
+        TopAppBar(title={Text(if(existing) "Edit card" else "Review your card",maxLines=1,overflow=TextOverflow.Ellipsis)},navigationIcon={IconButton(enabled=!busy,onClick=onBack) {Icon(Icons.AutoMirrored.Outlined.ArrowBack,"Cancel editing")}},actions={
             // Keep the commit target stationary while Android animates the keyboard.
             DockButton(enabled=!busy && card.displayLabel.isNotBlank(),onClick={focus.clearFocus();keyboard?.hide();vm.save()},modifier=Modifier.padding(end=12.dp)) {
                 Text(if(existing) "Save changes" else if(state.remainingPeople>0) "Save & next" else "Save card",maxLines=1)
             }
         })
         Column(Modifier.weight(1f).widthIn(max=720.dp).fillMaxWidth().align(Alignment.CenterHorizontally).verticalScroll(rememberScrollState()).padding(horizontal=24.dp),verticalArrangement=Arrangement.spacedBy(16.dp)) {
-            Text(if(existing) "Keep the connection current." else "The card, decoded. Your call.",style=MaterialTheme.typography.titleLarge)
+            Text(if(existing) "Update card details" else "Check the extracted details",style=MaterialTheme.typography.titleLarge)
             if(!existing) Text("Check the details against the photo. Text recognition can make mistakes.",color=MaterialTheme.colorScheme.onSurfaceVariant)
             Photo(card,vm,state.draftPreview,state.draftBackPreview)
             if(!existing && state.draftPreview!=null) {
@@ -456,13 +489,25 @@ private val destinations = listOf(Destination("Collection", Icons.Outlined.Style
             field("Job title",card.role,300) {change(card.copy(role=it))}
             field("Company",card.company,300) {change(card.copy(company=it))}
             Spacer(Modifier.height(4.dp))
-            Text("Ways to reconnect",style=MaterialTheme.typography.titleLarge)
-            field("Phone",card.phone,100,KeyboardType.Phone) {change(card.copy(phone=it))}
+            Text("Contact details",style=MaterialTheme.typography.titleLarge)
+            val editablePhones=card.phones.ifEmpty {card.contactPhones.ifEmpty {listOf(PhoneNumber(""))}}
+            fun changePhones(values:List<PhoneNumber>)=change(card.copy(phones=values,phone=values.firstOrNull {it.number.isNotBlank()}?.number.orEmpty()))
+            editablePhones.forEachIndexed { index, phone ->
+                Column(verticalArrangement=Arrangement.spacedBy(8.dp)) {
+                    Row(verticalAlignment=Alignment.CenterVertically) {
+                        Text("Phone ${index+1}",Modifier.weight(1f),style=MaterialTheme.typography.titleMedium)
+                        IconButton(enabled=!busy,onClick={changePhones(editablePhones.filterIndexed {i,_->i!=index})}) {Icon(Icons.Outlined.RemoveCircleOutline,"Remove phone ${index+1}")}
+                    }
+                    field("Number ${index+1}",phone.number,80,KeyboardType.Phone) {value ->changePhones(editablePhones.mapIndexed {i,item->if(i==index) item.copy(number=value) else item})}
+                    field("Label ${index+1} (optional)",phone.label,40) {value ->changePhones(editablePhones.mapIndexed {i,item->if(i==index) item.copy(label=value) else item})}
+                }
+            }
+            TextButton(enabled=!busy && editablePhones.size<12,onClick={changePhones(editablePhones+PhoneNumber(""))}) {Icon(Icons.Outlined.Add,null,Modifier.size(18.dp));Spacer(Modifier.width(8.dp));Text("Add number")}
             field("Email",card.email,300,KeyboardType.Email) {change(card.copy(email=it))}
             field("Website",card.website,300,KeyboardType.Uri) {change(card.copy(website=it))}
             field("Address",card.address,1000,multi=true) {change(card.copy(address=it))}
-            Text("Leave yourself a thread",style=MaterialTheme.typography.titleMedium)
-            field("Where you met, what you talked about…",card.notes,4000,multi=true) {change(card.copy(notes=it))}
+            Text("Notes",style=MaterialTheme.typography.titleMedium)
+            field("Notes about this card",card.notes,4000,multi=true) {change(card.copy(notes=it))}
             if(card.rawText.isNotBlank()) {
                 var source by rememberSaveable(card.id) {mutableStateOf(false)}
                 TextButton(onClick={source=!source}) {Icon(Icons.Outlined.DocumentScanner,null,Modifier.size(18.dp));Spacer(Modifier.width(8.dp));Text(if(source) "Hide original reading" else "Compare with original reading")}
@@ -480,7 +525,7 @@ private val destinations = listOf(Destination("Collection", Icons.Outlined.Style
     var password by remember {mutableStateOf("")}
     val busy=state.busy!=null
     Column(Modifier.widthIn(max=720.dp).fillMaxHeight().fillMaxWidth().verticalScroll(rememberScrollState()).padding(24.dp),verticalArrangement=Arrangement.spacedBy(20.dp)) {
-        Text("Make it yours.",style=MaterialTheme.typography.headlineLarge)
+        Text("Settings",style=MaterialTheme.typography.headlineLarge)
         Text(state.session?.email.orEmpty(),color=MaterialTheme.colorScheme.onSurfaceVariant)
         var profileName by remember(state.session?.displayName) { mutableStateOf(state.session?.displayName.orEmpty()) }
         OutlinedTextField(profileName,{profileName=it.take(100)},Modifier.fillMaxWidth(),label={Text("What should we call you?")},singleLine=true)
@@ -541,8 +586,8 @@ private val destinations = listOf(Destination("Collection", Icons.Outlined.Style
         Column(Modifier.widthIn(max=480.dp).fillMaxWidth().verticalScroll(rememberScrollState()).padding(32.dp),verticalArrangement=Arrangement.spacedBy(20.dp)) {
             Image(painterResource(R.drawable.visidock_mark),null,Modifier.size(72.dp).clip(MaterialTheme.shapes.large).background(Color(0xFF071D49)))
             Text("VisiDock",style=MaterialTheme.typography.titleLarge)
-            Text("Good meetings.\nNext chapters.",style=MaterialTheme.typography.headlineLarge)
-            Text(if(register) "Keep the card. Pick up the conversation." else "Your people, ready when you are.",color=MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("Your cards, organized.",style=MaterialTheme.typography.headlineLarge)
+            Text(if(register) "Create an account to save your cards." else "Sign in to your card collection.",color=MaterialTheme.colorScheme.onSurfaceVariant)
             if(register) OutlinedTextField(profileName,{profileName=it.take(100)},Modifier.fillMaxWidth(),label={Text("Your name")},singleLine=true,enabled=!busy)
             OutlinedTextField(email,{email=it.trim()},Modifier.fillMaxWidth(),enabled=!busy,label={Text("Email address")},singleLine=true,keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.Email))
             OutlinedTextField(password,{password=it},Modifier.fillMaxWidth(),enabled=!busy,label={Text("Password")},singleLine=true,visualTransformation=if(visible) VisualTransformation.None else PasswordVisualTransformation(),keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.Password),trailingIcon={IconButton(onClick={visible=!visible}) {Icon(if(visible) Icons.Outlined.VisibilityOff else Icons.Outlined.Visibility,if(visible) "Hide password" else "Show password")}})
@@ -573,8 +618,8 @@ private val destinations = listOf(Destination("Collection", Icons.Outlined.Style
     } else 0f
     Surface(Modifier.fillMaxSize(),color=MaterialTheme.colorScheme.background) {
         Column(Modifier.fillMaxSize().safeDrawingPadding().padding(28.dp),verticalArrangement=Arrangement.Center,horizontalAlignment=Alignment.CenterHorizontally) {
-            Text("From a card",style=MaterialTheme.typography.headlineLarge)
-            Text("to a connection.",style=MaterialTheme.typography.headlineLarge,color=MaterialTheme.colorScheme.primary)
+            Text("Reading your card",style=MaterialTheme.typography.headlineLarge)
+            Text("on this device.",style=MaterialTheme.typography.headlineLarge,color=MaterialTheme.colorScheme.primary)
             Spacer(Modifier.height(32.dp))
             Box(Modifier.fillMaxWidth().aspectRatio(1.65f).clip(MaterialTheme.shapes.large).background(MaterialTheme.colorScheme.surfaceVariant)) {
                 bitmap?.let {Image(it.asImageBitmap(),"Card being read",Modifier.fillMaxSize().padding(12.dp),contentScale=ContentScale.Fit)}
