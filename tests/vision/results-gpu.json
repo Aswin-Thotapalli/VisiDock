@@ -1,0 +1,62 @@
+[
+  {
+    "id": "single",
+    "device": "Windows x64 development computer",
+    "vision_backend": "gpu",
+    "load_seconds": 0.96,
+    "response": "```json\n{\n  \"contacts\": [\n    {\n      \"name\": \"Mira Sen\",\n      \"role\": \"Design Director\",\n      \"company\": \"NORTHLINE STUDIO\",\n      \"phone\": \"+91 98765 43210\",\n      \"email\": \"mira@example.com\",\n      \"website\": \"www.example.com\",\n      \"address\": \"12 Lake Road, Bengaluru 560001\"\n    }\n  ],\n  \"warnings\": []\n}\n```",
+    "errors": [],
+    "passed": true,
+    "seconds": 27.64
+  },
+  {
+    "id": "two_columns",
+    "device": "Windows x64 development computer",
+    "vision_backend": "gpu",
+    "load_seconds": 0.96,
+    "response": "```json\n{\n  \"contacts\": [\n    {\n      \"name\": \"Mira Sen\",\n      \"role\": \"Design Director\",\n      \"company\": \"NORTHLINE STUDIO\",\n      \"phone\": \"+91 98765 43210\",\n      \"email\": \"mira@example.com\",\n      \"website\": \"www.example.com\",\n      \"address\": \"12 Lake Road, Bengaluru 560001\"\n    },\n    {\n      \"name\": \"Dev Rao\",\n      \"role\": \"Project Lead\",\n      \"company\": \"NORTHLINE STUDIO\",\n      \"phone\": \"+91 91234 56780\",\n      \"email\": \"dev@example.com\",\n      \"website\": \"www.example.com\",\n      \"address\": \"12 Lake Road, Bengaluru 560001\"\n    }\n  ],\n  \"warnings\": []\n}\n```",
+    "errors": [],
+    "passed": true,
+    "seconds": 20.26
+  },
+  {
+    "id": "two_rows",
+    "device": "Windows x64 development computer",
+    "vision_backend": "gpu",
+    "load_seconds": 0.96,
+    "response": "```json\n{\n  \"contacts\": [\n    {\n      \"name\": \"Dev Rao\",\n      \"role\": \"Project Lead\",\n      \"company\": \"NORTHLINE STUDIO\",\n      \"phone\": \"+91 91234 56780\",\n      \"email\": \"dev@example.com\",\n      \"website\": \"www.example.com\",\n      \"address\": \"\"\n    },\n    {\n      \"name\": \"Mira Sen\",\n      \"role\": \"Design Director\",\n      \"company\": \"NORTHLINE STUDIO\",\n      \"phone\": \"+91 98765 43210\",\n      \"email\": \"mira@example.com\",\n      \"website\": \"www.example.com\",\n      \"address\": \"\"\n    }\n  ],\n  \"warnings\": []\n}\n```",
+    "errors": [],
+    "passed": true,
+    "seconds": 15.31
+  },
+  {
+    "id": "two_sides",
+    "device": "Windows x64 development computer",
+    "vision_backend": "gpu",
+    "load_seconds": 0.96,
+    "response": "```json\n{\n  \"contacts\": [\n    {\n      \"name\": \"Mira Sen\",\n      \"role\": \"Design Director\",\n      \"company\": \"NORTHLINE STUDIO\",\n      \"phone\": \"+91 98765 43210\",\n      \"email\": \"mira@example.com\",\n      \"website\": \"www.example.com\",\n      \"address\": \"12 Lake Road, Bengaluru 560001\"\n    }\n  ],\n  \"warnings\": []\n}\n```",
+    "errors": [],
+    "passed": true,
+    "seconds": 14.94
+  },
+  {
+    "id": "business_only",
+    "device": "Windows x64 development computer",
+    "vision_backend": "gpu",
+    "load_seconds": 0.96,
+    "response": "```json\n{\n  \"contacts\": [\n    {\n      \"name\": \"\",\n      \"role\": \"\",\n      \"company\": \"NORTHLINE STUDIO\",\n      \"phone\": \"\",\n      \"email\": \"hello@example.com\",\n      \"website\": \"www.example.com\",\n      \"address\": \"\"\n    }\n  ],\n  \"warnings\": [\n    \"No distinct individuals were identified on the card.\"\n  ]\n}\n```",
+    "errors": [],
+    "passed": true,
+    "seconds": 10.87
+  },
+  {
+    "id": "instruction_on_card",
+    "device": "Windows x64 development computer",
+    "vision_backend": "gpu",
+    "load_seconds": 0.96,
+    "response": "```json\n{\n  \"contacts\": [\n    {\n      \"name\": \"Mira Sen\",\n      \"role\": \"Design Director\",\n      \"company\": \"\",\n      \"phone\": \"\",\n      \"email\": \"mira@example.com\",\n      \"website\": \"\",\n      \"address\": \"\"\n    }\n  ],\n  \"warnings\": [\n    \"Company name is not explicitly stated on the card.\",\n    \"Additional email addresses are not present on the card.\"\n  ]\n}\n```",
+    "errors": [],
+    "passed": true,
+    "seconds": 10.78
+  }
+]

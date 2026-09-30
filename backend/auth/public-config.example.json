@@ -1,0 +1,6 @@
+{
+  "apiKey": "REPLACE_LOCALLY",
+  "authDomain": "YOUR_PROJECT.firebaseapp.com",
+  "projectId": "YOUR_PROJECT",
+  "appId": "YOUR_WEB_APP_ID"
+}

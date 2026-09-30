@@ -1,0 +1,56 @@
+I want you to continue building my Android visiting-card app. Its final name is **VisiDock**. I have attached `CardVault-Android-Source.zip`, which contains the initial Android source project created in another ChatGPT Work conversation. Please inspect the actual files before making changes. The project currently uses the temporary name “Card Vault.”
+
+## What I want the finished app to do
+
+I collect visiting cards and want one secure place to keep them. I should be able to photograph a card or import its image, have the app extract its details, review and correct those details, and save both the information and the original card image.
+
+I want to search in normal language, such as “Who was the Blockchain consultant I met at the conference?” or “Find the person from the manufacturing company in Bengaluru.” Search should use the information extracted from the card and any notes I add. I also want to add someone to my phone or Google Contacts **only when I explicitly request it**. The app needs account login and private data for each user.
+
+Please build and verify the Android app. **I will handle hosting/service ownership, signing, and Google Play internal testing myself.** Tell me exactly what configuration or accounts I need to supply. Do not claim it is finished or secure for real contact data until it has been built, tested, and reviewed.
+
+## What is already in the attached project
+
+The project is a native Android application written in Kotlin with Jetpack Compose. Its package/application ID is currently `io.caerulean.cardvault`. It uses Firebase Authentication with **email and password**, Cloud Firestore for card details, Firebase Storage for card images, and Google ML Kit’s on-device text recognition.
+
+The main files are:
+
+- `app/src/main/java/io/caerulean/cardvault/MainActivity.kt` — app screens and the current authentication, camera/import, OCR, Firebase, and contacts flows.
+- `app/src/main/java/io/caerulean/cardvault/CardLogic.kt` — basic field extraction and search.
+- `app/src/test/java/io/caerulean/cardvault/CardLogicTest.kt` — two small unit tests.
+- `firestore.rules` and `storage.rules` — proposed per-user access rules.
+- `README.md` — setup notes and current limitations.
+
+The current flow is:
+
+1. A user creates an email/password account or signs in.
+2. They take a card photo using Android’s camera app or import an image.
+3. ML Kit recognizes text on the device.
+4. Simple heuristics suggest a name, job title, company, phone, email, and website.
+5. The user reviews and edits fields, including address, notes, and the recognized text.
+6. The app uploads a resized JPEG to Firebase Storage and stores the fields in Firestore under that user’s UID.
+7. The home screen lists saved cards and searches their fields, notes, and OCR text.
+8. Opening a card shows its details and saved image. The user can delete it.
+9. “Add to phone contacts” opens Android’s contact editor with fields filled in; the user confirms Save in that app. The project does **not** directly write to Google Contacts or check duplicates.
+
+The existing search is **keyword/phrase matching with a few synonyms and date filters**, not genuine AI semantic search. Examples like “this month” and “last month” have basic handling. It searches the records downloaded into the app.
+
+The app currently disables Firestore disk persistence, blocks screenshots with `FLAG_SECURE`, and supplies Firebase rules intended to restrict each user to their own documents and images. These measures have **not** undergone a security review. Firebase provides its standard authentication, transport protection, and storage encryption; this is **not end-to-end encryption**.
+
+## What has and has not been verified
+
+The ZIP archive was checked for integrity. The project was **not compiled or run** in the original environment because Android SDK and Gradle were unavailable there. No APK or Android App Bundle was produced. The unit tests were written but **not executed**. Treat this as an initial source implementation that may contain build errors, functional bugs, and security gaps.
+
+The ZIP has no Gradle wrapper and no `app/google-services.json`. There is no Firebase project connected to it. No credentials or private keys are included.
+
+## What I need you to do next
+
+1. Rename the app and its visible branding to **VisiDock**. Discuss the final application ID with me before making a choice that affects Firebase registration or Play Store identity.
+2. Set up a reproducible Android build, compile the project, run the tests, and fix any errors. If your environment supports an emulator or connected device, exercise the key flows there.
+3. Review the scanning flow for image rotation, large images, memory use, temporary-file cleanup, failed uploads, and OCR mistakes. Keep the review-and-correct step.
+4. Improve the UI into a polished Android app, including the scan flow, card list, card detail, edit capability, empty states, loading/error states, and search results.
+5. Implement genuinely useful natural-language search. Propose an approach that protects contact data and keeps model-provider secrets out of the Android app. Be explicit about any server component I would later need to host. Do not describe simple keyword matching as AI search.
+6. Review authentication, Firebase rules, data validation, deletion behavior, privacy, and account recovery. Test that one user cannot read another user’s cards or images. Do not use permissive test-mode rules for real data.
+7. Make adding a contact an explicit user action. Improve field mapping and duplicate handling where practical; ask before adding any integration that requires access to my Google account.
+8. Produce a tested source project, clear setup instructions, and, if possible, a debug APK for my own testing. I will handle the final hosting configuration, signing credentials, and Play internal-testing upload.
+
+Please start by auditing the attached project and tell me what actually builds, what is incomplete, and the implementation order. Then continue the work rather than stopping at a plan.

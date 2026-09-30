@@ -1,0 +1,13 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    function owner(uid) { return request.auth != null && request.auth.uid == uid; }
+    match /users/{uid}/cards/{cardId}/{file} {
+      allow read, delete: if owner(uid) && file in ['preview.jpg', 'original'];
+      allow create, update: if owner(uid) && (
+        (file == 'preview.jpg' && request.resource.size < 6 * 1024 * 1024 && request.resource.contentType == 'image/jpeg') ||
+        (file == 'original' && request.resource.size <= 20 * 1024 * 1024 && request.resource.contentType in ['image/jpeg', 'image/png', 'image/webp'])
+      );
+    }
+  }
+}

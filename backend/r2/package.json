@@ -1,0 +1,8 @@
+{
+  "name": "visidock-private-images",
+  "private": true,
+  "type": "module",
+  "scripts": { "test": "node --test test/*.test.mjs", "dev": "wrangler dev", "check": "wrangler deploy --dry-run", "deploy": "wrangler deploy" },
+  "dependencies": { "jose": "^6.1.0" },
+  "devDependencies": { "wrangler": "^4.0.0" }
+}

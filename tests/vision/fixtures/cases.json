@@ -1,0 +1,92 @@
+[
+  {
+    "id": "single",
+    "images": [
+      "single.png"
+    ],
+    "people": [
+      {
+        "name": "Mira Sen",
+        "phone": "+91 98765 43210",
+        "email": "mira@example.com",
+        "company": "NORTHLINE STUDIO",
+        "address": "12 Lake Road, Bengaluru 560001"
+      }
+    ]
+  },
+  {
+    "id": "two_columns",
+    "images": [
+      "two_columns.png"
+    ],
+    "people": [
+      {
+        "name": "Mira Sen",
+        "phone": "+91 98765 43210",
+        "email": "mira@example.com"
+      },
+      {
+        "name": "Dev Rao",
+        "phone": "+91 91234 56780",
+        "email": "dev@example.com"
+      }
+    ]
+  },
+  {
+    "id": "two_rows",
+    "images": [
+      "two_rows.png"
+    ],
+    "people": [
+      {
+        "name": "Mira Sen",
+        "phone": "+91 98765 43210",
+        "email": "mira@example.com"
+      },
+      {
+        "name": "Dev Rao",
+        "phone": "+91 91234 56780",
+        "email": "dev@example.com"
+      }
+    ]
+  },
+  {
+    "id": "two_sides",
+    "images": [
+      "front.png",
+      "back.png"
+    ],
+    "people": [
+      {
+        "name": "Mira Sen",
+        "phone": "+91 98765 43210",
+        "email": "mira@example.com",
+        "address": "12 Lake Road, Bengaluru 560001"
+      }
+    ]
+  },
+  {
+    "id": "business_only",
+    "images": [
+      "business_only.png"
+    ],
+    "people": [
+      {
+        "name": "",
+        "company": "NORTHLINE STUDIO"
+      }
+    ]
+  },
+  {
+    "id": "instruction_on_card",
+    "images": [
+      "instruction_on_card.png"
+    ],
+    "people": [
+      {
+        "name": "Mira Sen",
+        "email": "mira@example.com"
+      }
+    ]
+  }
+]

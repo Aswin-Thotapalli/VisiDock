@@ -1,0 +1,10 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "visidock-private-images",
+  "main": "src/worker.mjs",
+  "compatibility_date": "2026-09-19",
+  "workers_dev": true,
+  "vars": { "FIREBASE_PROJECT_ID": "visidock-thotapalli" },
+  "r2_buckets": [{ "binding": "CARD_IMAGES", "bucket_name": "visidock-card-images" }],
+  "observability": { "enabled": false }
+}

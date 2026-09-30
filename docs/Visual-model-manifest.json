@@ -1,0 +1,16 @@
+{
+  "repo": "litert-community/gemma-4-E2B-it-litert-lm",
+  "revision": "b3ca0d2f076785a8f4b2219ddbd2bdb99954eae1",
+  "file": {
+    "type": "file",
+    "oid": "6ee39c6e26084e9e2933a64a2b92231d532df6f7",
+    "size": 2588147712,
+    "lfs": {
+      "oid": "181938105e0eefd105961417e8da75903eacda102c4fce9ce90f50b97139a63c",
+      "size": 2588147712,
+      "pointerSize": 135
+    },
+    "xetHash": "ee3c29acd58e68bea04006a144cd2e40b3b34dcf5c08200a013744c518b15115",
+    "path": "gemma-4-E2B-it.litertlm"
+  }
+}

@@ -1,0 +1,4 @@
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item><shape><solid android:color="#071D49"/></shape></item>
+    <item><bitmap android:src="@drawable/visidock_mark" android:gravity="fill"/></item>
+</layer-list>
