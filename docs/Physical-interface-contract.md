@@ -129,3 +129,9 @@ For each scene, capture normal-speed video with Android animations enabled and a
 Measure responsiveness independently of appearance: immediate input acknowledgment, no full-size image decoding during drawing, bounded visible image work, no continuous composition caused solely by draw-phase pressure, and no animation-induced duplicate state changes. Record frame timing on the actual device rather than claiming smoothness from unit tests or a screenshot.
 
 The current source is a foundation plus several authored scenes. The outstanding P entries above are part of the whole-app acceptance contract. They must remain visible until implemented and verified; neither a successful build nor a count of animated wrappers closes them.
+
+## Control surface geometry correction
+
+Decorated Material controls now disable Material's internal minimum-interaction layout reservation and reserve the 48dp interaction space outside their physical drawing. The fill, native border, clip, press outline and cast-shadow silhouette therefore use the same actual container dimensions. Caller-requested widths/heights remain effective. Shape parameters are explicit for pill buttons and chips; switches and navigation glyphs no longer receive an unrelated wrapper oval. Invisible edge targeting is exercised by `MotionInteractionTest.physicalButtonsPreserveRequestedSizesAndAccessibleTouchSpace`. This test source still requires device execution for the current build.
+
+Camera toolbar and recovery panel now sit on a common lit supporting plane; the shutter's pressure closes its own metal contact shadow. Live camera framing is still a guide, not live boundary detection. These changes do not claim completion of all entries in the contract.

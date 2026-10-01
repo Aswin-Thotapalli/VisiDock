@@ -9,7 +9,8 @@ import org.junit.Assert.*
 import kotlinx.coroutines.runBlocking
 
 class VaultInteractionTest {
-    @get:Rule val compose = createAndroidComposeRule<MainActivity>()
+    val compose = createAndroidComposeRule<MainActivity>()
+    @get:Rule val isolated = org.junit.rules.RuleChain.outerRule(IsolatedDemoDraftRule()).around(compose)
     @Before fun waitForCollection() {
         compose.waitUntil(10000) { compose.onAllNodesWithText("Cards").fetchSemanticsNodes().isNotEmpty() }
         compose.waitForIdle()
@@ -46,12 +47,33 @@ class VaultInteractionTest {
         compose.onNodeWithText("Save changes").performClick()
         openAcknowledgedCardFromCase("Updated Connection")
         compose.onNodeWithText("Delete card").performScrollTo().performClick()
-        compose.onNodeWithText("Delete permanently").performClick()
+        compose.onNodeWithText("Remove card").performClick()
         compose.waitUntil(10000) { compose.onAllNodesWithText("Cards").fetchSemanticsNodes().isNotEmpty() }
         compose.onNodeWithText("Cards").assertIsDisplayed()
         // The confirmed-save banner may still name the person; only a collection row
         // represents a card that survived deletion.
         compose.onNode(hasText("Updated Connection") and hasClickAction()).assertDoesNotExist()
+        compose.onNodeWithText("Settings").performClick()
+        compose.onNodeWithText("Sync & recovery").performScrollTo().performClick()
+        compose.onNodeWithText("Recovery bin · 1").performScrollTo().performClick()
+        compose.onNodeWithText("Updated Connection").assertIsDisplayed()
+        compose.onNodeWithText("Restore").performClick()
+        compose.waitUntil(10000) {compose.onAllNodesWithText("Updated Connection").fetchSemanticsNodes().isEmpty()}
+        compose.onNodeWithText("Done").performClick()
+        compose.onNodeWithText("Collection").performClick()
+        compose.onNodeWithText("List",substring=false).performClick()
+        compose.onNodeWithText("List",substring=false).assertIsSelected()
+        // Restore appends the card after the three demo cards. Its lazy row is
+        // not composed at the top of the collection; scroll the list to create
+        // that row rather than trying to scroll an absent semantic node.
+        // Filtering also runs off the Compose clock, so await the restored count.
+        compose.waitUntil(10000) {compose.onAllNodesWithText("4 cards").fetchSemanticsNodes().isNotEmpty()}
+        val restored=hasText("Updated Connection") and hasClickAction()
+        compose.onNode(hasScrollToIndexAction()).performScrollToNode(restored)
+        compose.onNode(restored).assertIsDisplayed().performClick()
+        compose.waitUntil(10000) {compose.onAllNodesWithContentDescription("Edit card").fetchSemanticsNodes().isNotEmpty()}
+        compose.onNodeWithText("Updated Connection").assertExists()
+        compose.onNodeWithText("Test Company").assertExists()
     }
     @Test fun draftSurvivesActivityRecreation() {
         compose.onNodeWithContentDescription("Add card").performClick()
@@ -103,7 +125,7 @@ class VaultInteractionTest {
         // Exercise an actual completed search before clearing, not just a text edit.
         compose.waitUntil(10000) {
             compose.onAllNodesWithText("1 card").fetchSemanticsNodes().isNotEmpty() &&
-                compose.onAllNodesWithText("Searching on your device�").fetchSemanticsNodes().isEmpty()
+                compose.onAllNodesWithText("Searching on your device…").fetchSemanticsNodes().isEmpty()
         }
         compose.onNode(hasScrollToIndexAction()).performScrollToNode(hasText("Ananya Rao"))
         compose.onNodeWithText("Ananya Rao").assertIsDisplayed()
@@ -171,12 +193,26 @@ class VaultInteractionTest {
         compose.onNodeWithContentDescription("Add card").performClick()
         compose.onNodeWithText("Enter details").performClick()
         compose.onNodeWithText("Full name").performTextInput("Validation Person")
-        compose.onNodeWithText("Website").performScrollTo().performTextInput("person@example.test")
+        compose.onNodeWithText("Website 1").performScrollTo().performTextInput("person@example.test")
         compose.onNodeWithText("Save card").performClick()
         compose.waitUntil(10000) {compose.onAllNodesWithText("Enter a website here; email addresses belong above.").fetchSemanticsNodes().isNotEmpty()}
-        compose.onNodeWithText("Website").assertIsFocused().performTextReplacement("https://example.test")
+        compose.onNodeWithText("Website 1").assertIsFocused().performTextReplacement("https://example.test")
         compose.onNodeWithText("Save card").performClick()
         openAcknowledgedCardFromCase("Validation Person")
         compose.onNodeWithText("Validation Person").assertExists()
+    }
+    @Test fun secondaryEmailRejectsSaveAndFocusesOnlyAfterExplicitSave() {
+        compose.onNodeWithContentDescription("Add card").performClick()
+        compose.onNodeWithText("Enter details").performClick()
+        compose.onNodeWithText("Full name").performTextInput("Repeated channel person")
+        compose.onNodeWithText("Email 1").performScrollTo().performTextInput("valid@example.test")
+        compose.onNodeWithText("Add another email").performScrollTo().performClick()
+        compose.onNodeWithText("Email 2").performScrollTo().performTextInput("missing-at.example.test")
+        compose.onNodeWithText("Save card").performClick()
+        compose.waitForIdle()
+        compose.onNodeWithText("Email 2").assertIsFocused().performTextReplacement("second@example.test")
+        compose.onNodeWithText("Save card").performClick()
+        openAcknowledgedCardFromCase("Repeated channel person")
+        compose.onNodeWithText("second@example.test").performScrollTo().assertIsDisplayed()
     }
 }

@@ -11,6 +11,47 @@ beforeEach(async () => { await env.clearFirestore(); await env.clearStorage(); }
 after(async () => { await env?.cleanup(); });
 const db = uid => env.authenticatedContext(uid).firestore();
 
+test('offline revisions protect metadata, recovery tombstones and lifecycle-only acknowledgements', async()=>{
+  const target=doc(db('alice'),'users/alice/cards/one');
+  const value={...card(),revision:1,updatedAt:Date.now(),deletedAt:0,mutationId:'first',
+    emails:['person@example.com','office@example.com'],websites:['example.com'],tags:['Partner'],collections:['Conference'],
+    meetingDate:'2026-10-01',event:'Meeting',location:'Hyderabad',datedNotes:{[Date.now()+':note-one']:'Discussed the proposal'},isOwnCard:false};
+  await assertSucceeds(setDoc(target,value));
+  await assertFails(updateDoc(target,{notes:'Stale overwrite',revision:1}));
+  await assertFails(updateDoc(target,{notes:'Skipped revision',revision:9}));
+  await assertSucceeds(updateDoc(target,{notes:'Saved offline then synchronized',revision:2,mutationId:'second'}));
+  await assertSucceeds(updateDoc(target,{deletedAt:Date.now(),revision:3,mutationId:'deleted'}));
+  await assertSucceeds(updateDoc(target,{deletedAt:0,revision:4,mutationId:'restored'}));
+  await assertFails(updateDoc(target,{revision:5,emails:['x'.repeat(301)]}));
+  await assertFails(updateDoc(target,{revision:5,tags:[42]}));
+  await assertFails(updateDoc(target,{revision:5,tags:['x'.repeat(80)+'\n'+'y'.repeat(80)]}));
+  await assertFails(updateDoc(target,{revision:5,datedNotes:{'1:bad':''}}));
+  await assertFails(updateDoc(target,{revision:5,tags:Array(25).fill('x')}));
+  await assertSucceeds(updateDoc(target,{status:'deleting'}));
+  await assertSucceeds(deleteDoc(target));
+});
+
+test('maximum bounded metadata validates every last entry',async()=>{
+  const target=doc(db('alice'),'users/alice/cards/one');
+  const value={...card(),revision:1,updatedAt:Date.now(),deletedAt:0,mutationId:'max',
+    phones:Array.from({length:12},(_,i)=>({number:'+9198765432'+i,label:'Office'})),
+    emails:Array(12).fill('person@example.com'),websites:Array(12).fill('example.com'),
+    tags:Array(24).fill('tag'),collections:Array(24).fill('collection'),
+    datedNotes:Object.fromEntries(Array.from({length:24},(_,i)=>['1:'+i,'A dated note'])),isOwnCard:true};
+  await assertSucceeds(setDoc(target,value));
+  await assertFails(updateDoc(target,{revision:2,datedNotes:{...value.datedNotes,'1:23':42}}));
+});
+
+test('timeline bounds reject malformed keys, values and separators',async()=>{
+  const target=doc(db('alice'),'users/alice/cards/one');
+  await assertSucceeds(setDoc(target,{...card(),revision:1,datedNotes:{'9223372036854775807:note:colon':'x'.repeat(4000)}}));
+  for(const datedNotes of [
+    {'1:note':'x'.repeat(4001)}, {'0:note':'Note'}, {'-1:note':'Note'},
+    {'9223372036854775808:note':'Note'}, {'1:':'Note'}, {'1:bad\nkey':'Note'},
+    {'1:note':42}, {'1:note':'a\u001fb'}, {'1:note':''}
+  ]) await assertFails(updateDoc(target,{revision:2,datedNotes}));
+});
+
 test('image replacement requires exact rollback record and permits durable completion and rollback',async()=>{
   const target=doc(db('alice'),'users/alice/cards/one');const original={...card(),sourceScanId:'11111111-1111-1111-1111-111111111111'};
   await setDoc(target,original);

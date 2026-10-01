@@ -31,25 +31,46 @@ data class VaultState(
     val cropPath:String?=null,val cropBack:Boolean=false,
     val captureReview:Boolean=false, val scanSide:Int?=null, val scanPreview:String?=null,
     val scanRegions:List<OcrRegion> = emptyList(), val scanAnalysisReady:Boolean=false,
-    val correctionHistory:List<CorrectionActivity> = emptyList()
+    val correctionHistory:List<CorrectionActivity> = emptyList(),
+    val fieldSources:List<FieldSource> = emptyList(),
+    val fieldIssues:List<ExtractionReviewIssue> = emptyList(),val sourceContactIndex:Int=0,
+    val localVault:LocalVaultState=LocalVaultState(),val versions:List<CardVersion> = emptyList(),
+    val ownCardChoiceRequired:Boolean=false
 )
 
 class VaultViewModel(application: Application, private val saved: SavedStateHandle) : AndroidViewModel(application) {
-    private val repository = runCatching { if (BuildConfig.DEMO) DemoRepository() else CloudRepository() }.getOrNull()
-    private val mutable = MutableStateFlow(VaultState(session = repository?.session(), configured = repository != null))
+    private val repository = runCatching { if (BuildConfig.DEMO) DemoRepository() else OfflineCardRepository(application,CloudRepository()) }.getOrNull()
+    private val mutable = MutableStateFlow(VaultState(session = repository?.session(), configured = repository != null,busy="Recovering your workspace…"))
     val state = mutable.asStateFlow()
     private var listener: Job? = null
     private var cleanup: Job? = null
     private var historyLoad:Job?=null
+    private var localListener:Job?=null
     private val searchEngine = SemanticSearch(application)
     private val visualModel = VisualModel(application)
+    private val draftStore=DraftStore(application)
+    private var draftPersistenceReady=false
     private var operationJob: Job? = null
     private var scanPresentation: kotlinx.coroutines.CompletableDeferred<Unit>? = null
     fun finishScanPresentation() {scanPresentation?.complete(Unit)}
     private var pendingPeople = emptyList<Card>()
     suspend fun search(cards: List<Card>, query: String) = searchEngine.search(cards, query)
-    private fun update(block: (VaultState) -> VaultState) { mutable.atomicUpdate(block) }
+    private fun update(block: (VaultState) -> VaultState) {
+        mutable.atomicUpdate(block)
+        if(draftPersistenceReady) viewModelScope.launch {repository?.session()?.uid?.let {owner->draftStore.queueSnapshot(owner,saved.keys().associateWith {saved.get<Any?>(it)})}}
+    }
     init {
+        viewModelScope.launch {
+            var recovered=true
+            repository?.session()?.uid?.let {owner->
+                if(saved.get<String>("draft")==null) try {draftStore.load(owner).forEach {(key,value)->saved[key]=value}}
+                catch(e:Exception) {recovered=runCatching {draftStore.quarantineUnreadable(owner)}.isSuccess;update {it.copy(error="Your saved draft could not be recovered. Its recovery file has been preserved.")}}
+            }
+            restoreDraftState();draftPersistenceReady=recovered;update {it.copy(busy=null)}
+        }
+        viewModelScope.launch {draftStore.errors.collect {error->if(error!=null) mutable.atomicUpdate {it.copy(error=error)}}}
+    }
+    private fun restoreDraftState() {
         if (saved.get<String>("draftOwner") != repository?.session()?.uid) {
             clearFiles(); saved["draft"] = null; saved["selected"] = null
         }
@@ -65,12 +86,14 @@ class VaultViewModel(application: Application, private val saved: SavedStateHand
                 val value=array.getJSONObject(i); cardFrom(value.getString("id"),value.keys().asSequence().associateWith {value.get(it)})
             } }
         }
-        update { it.copy(draftPreview=saved["preview"],draftBackPreview=saved["backPreview"],captureReview=saved.get<Boolean>("captureReview") ?: false,cropPath=saved["cropSource"],cropBack=saved.get<Boolean>("cropBack") ?: false,selectedId=saved["selected"], remainingPeople=pendingPeople.size, visualModelReady=visualModel.installed(), extractionWarnings=saved.get<ArrayList<String>>("extractionWarnings").orEmpty()) }
-        viewModelScope.launch(Dispatchers.IO) { ImagePipeline.cleanOld(application, setOfNotNull(saved["original"], saved["preview"], saved["camera"], saved["backOriginal"], saved["backPreview"])) }
+        update { it.copy(draftPreview=saved["preview"],draftBackPreview=saved["backPreview"],captureReview=saved.get<Boolean>("captureReview") ?: false,cropPath=saved["cropSource"],cropBack=saved.get<Boolean>("cropBack") ?: false,selectedId=saved["selected"], remainingPeople=pendingPeople.size, visualModelReady=visualModel.installed(), extractionWarnings=saved.get<ArrayList<String>>("extractionWarnings").orEmpty(),
+            fieldSources=SourceReviewState.readSources(saved["fieldSourcesJson"]),fieldIssues=SourceReviewState.readIssues(saved["fieldIssuesJson"]),sourceContactIndex=saved.get<Int>("sourceContactIndex") ?: 0,ownCardChoiceRequired=saved.get<Boolean>("ownCardChoiceRequired")==true) }
+        viewModelScope.launch(Dispatchers.IO) { ImagePipeline.cleanOld(getApplication(), draftStore.protectedPaths()+setOfNotNull(saved["original"], saved["preview"], saved["camera"], saved["backOriginal"], saved["backPreview"])) }
         viewModelScope.launch(Dispatchers.IO) {
             val keep=saved.get<String>("cropSource")
             val cutoff=System.currentTimeMillis()-24*60*60*1000
-            ImageCropper.directory(application).listFiles().orEmpty().filter {it.path!=keep && it.lastModified()<cutoff}.forEach {it.delete()}
+            val protected=draftStore.protectedPaths()
+            ImageCropper.directory(getApplication()).listFiles().orEmpty().filter {it.path!=keep && it.canonicalPath !in protected && it.lastModified()<cutoff}.forEach {it.delete()}
         }
         observe()
     }
@@ -78,6 +101,7 @@ class VaultViewModel(application: Application, private val saved: SavedStateHand
         listener?.cancel()
         cleanup?.cancel()
         historyLoad?.cancel()
+        localListener?.cancel()
         if (repository?.session() == null) { update { it.copy(loading=false, cards=emptyList()) }; return }
         learning().sessionActive(true)
         update { it.copy(loading=true, session=repository.session(),learningEnabled=learning().enabled()) }
@@ -93,6 +117,11 @@ class VaultViewModel(application: Application, private val saved: SavedStateHand
             try { repository.observe().collect { cards -> update { it.copy(cards=cards, loading=false) } } }
             catch (e: CancellationException) { throw e }
             catch (e: Exception) { update { it.copy(loading=false, error="Could not load your collection. Check your connection and retry.") } }
+        }
+        localListener=viewModelScope.launch {
+            try { repository.observeLocalState().collect {local->update {it.copy(localVault=local)}} }
+            catch (e: CancellationException) { throw e }
+            catch (_: Exception) { update { it.copy(error="Local sync status could not be loaded. Your collection has not been changed.") } }
         }
         cleanup = viewModelScope.launch {
             try { repository.retryCleanup() }
@@ -131,12 +160,33 @@ class VaultViewModel(application: Application, private val saved: SavedStateHand
     }
     fun cancelOperation() { operationJob?.cancel() }
     fun skipPerson() {
+        if(state.value.ownCardChoiceRequired) {update {it.copy(error="Choose which person is you before continuing.")};return}
         if(state.value.busy != null || pendingPeople.isEmpty()) return
+        rememberProcessedPerson()
         val next=pendingPeople.first(); setPending(pendingPeople.drop(1)); setDraft(next)
+        saved["protectedEdits"]=null;setReview(state.value.fieldSources,state.value.fieldIssues,state.value.sourceContactIndex+1)
+    }
+    private fun sourceBaselines(): Map<String,Card> = saved.get<String>("scanProposals")?.let { raw ->
+        val json=JSONObject(raw)
+        json.keys().asSequence().associateWith { id -> val item=json.getJSONObject(id);cardFrom(id,item.keys().asSequence().associateWith {item.get(it)}) }
+    }.orEmpty()
+    private fun processedPeople(): List<Card> = saved.get<String>("processedPeopleJson")?.let { raw ->
+        val array=JSONArray(raw)
+        (0 until array.length()).map { i -> val item=array.getJSONObject(i);cardFrom(item.getString("id"),item.keys().asSequence().associateWith {item.get(it)}) }
+    }.orEmpty()
+    private fun rememberProcessedPerson() {
+        val current=state.value.draft ?: return
+        val baseline=sourceBaselines()[current.id] ?: current
+        saved["processedPeopleJson"]=JSONArray((processedPeople()+baseline).distinctBy {it.id}.map {JSONObject(it.record()+ ("id" to it.id))}).toString()
+    }
+    private fun setReview(sources:List<FieldSource>,issues:List<ExtractionReviewIssue>,index:Int) {
+        saved["fieldSourcesJson"]=SourceReviewState.sources(sources);saved["fieldIssuesJson"]=SourceReviewState.issues(issues)
+        saved["sourceContactIndex"]=index
+        update {it.copy(fieldSources=sources,fieldIssues=issues,sourceContactIndex=index)}
     }
     private fun setPending(people: List<Card>) {
         pendingPeople=people
-        saved["pendingPeople"]=JSONArray(people.map { JSONObject(it.record() + ("id" to it.id)) }).toString()
+        saved["pendingPeople"]=JSONArray(people.map { JSONObject(it.record() + mapOf("id" to it.id,"hasLocalFrontImage" to it.hasLocalFrontImage,"hasLocalBackImage" to it.hasLocalBackImage)) }).toString()
         update { it.copy(remainingPeople=people.size) }
     }
     private fun setWarnings(warnings: List<String>) {
@@ -191,7 +241,7 @@ class VaultViewModel(application: Application, private val saved: SavedStateHand
     fun signOut() {
         if (state.value.busy != null) return
         repository?.session()?.let { learning().sessionActive(false) }
-        listener?.cancel(); cleanup?.cancel(); historyLoad?.cancel(); discard(); repository?.signOut()
+        listener?.cancel();localListener?.cancel(); cleanup?.cancel(); historyLoad?.cancel(); discard(); repository?.signOut()
         visualModel.release()
         viewModelScope.launch { searchEngine.clear() }
         saved["selected"] = null
@@ -206,6 +256,38 @@ class VaultViewModel(application: Application, private val saved: SavedStateHand
     }
     fun newCard() { if (state.value.busy != null) return; clearFiles(); setDraft(Card(id=UUID.randomUUID().toString())); update { it.copy(draftPreview=null, draftBackPreview=null) } }
     fun beginCapture() = newCard()
+    fun newOwnCard() {if(state.value.busy!=null) return;newCard();state.value.draft?.let {setDraft(it.copy(isOwnCard=true))}}
+    fun ownCardCandidates():List<Card> = listOfNotNull(state.value.draft)+pendingPeople
+    fun chooseOwnCard(cardId:String) {
+        if(state.value.busy!=null || !state.value.ownCardChoiceRequired) return
+        val draft=state.value.draft ?: return
+        val owner=ownCardCandidates().firstOrNull {it.id==cardId} ?: return
+        val selected=draft.copy(isOwnCard=draft.id==cardId)
+        val protection=saved.get<String>("protectedEdits")?.let(::JSONObject) ?: JSONObject()
+        protection.put("isOwnCard",selected.isOwnCard);saved["protectedEdits"]=protection.toString()
+        setPending(pendingPeople.map {it.copy(isOwnCard=it.id==cardId)})
+        saved["ownCardChoiceRequired"]=false
+        setDraft(selected)
+        update {it.copy(ownCardChoiceRequired=false,error=null,message="${owner.displayLabel.ifBlank {"Selected person"}} is your card.")}
+    }
+    fun importContact(card:Card) {if(state.value.busy!=null) return;newCard();setDraft(card.copy(id=UUID.randomUUID().toString()))}
+    fun importPair(item:BatchImportItem) {
+        if(state.value.busy!=null) return
+        newCard();saved["activeImportId"]=item.id;saved["importBackPath"]=item.backPath
+        stageCrop(item.front)
+    }
+    fun exportCards(uri:Uri,format:String,fields:ShareFields,ids:Set<String>) = operation("Exporting contacts…") {
+        VaultTransfer(getApplication(),checkNotNull(repository)).export(uri,state.value.cards.filter {it.id in ids},format,fields)
+        update {it.copy(message="Export saved")}
+    }
+    fun backup(uri:Uri,password:CharArray) = operation("Creating encrypted backup…",600_000) {
+        VaultTransfer(getApplication(),checkNotNull(repository)).backup(uri,state.value.cards,password)
+        update {it.copy(message="Encrypted backup saved")}
+    }
+    fun restoreBackup(uri:Uri,password:CharArray) = operation("Restoring backup…",600_000) {
+        val count=VaultTransfer(getApplication(),checkNotNull(repository)).restore(uri,password)
+        update {it.copy(message="$count cards restored as new entries")}
+    }
     fun cancelCapture() = discard()
     fun prepareSideEdit(card:Card,back:Boolean) {
         if(state.value.busy!=null) return
@@ -227,11 +309,15 @@ class VaultViewModel(application: Application, private val saved: SavedStateHand
     }
     fun changeDraft(card: Card) {
         if(state.value.busy!=null || state.value.draft?.id!=card.id) return
+        val before=state.value.draft?.record().orEmpty()
+        val protected=saved.get<String>("protectedEdits")?.let(::JSONObject) ?: JSONObject()
+        card.record().forEach {(key,value)->if(before[key]!=value) protected.put(key,JSONObject.wrap(value))}
+        saved["protectedEdits"]=protected.toString()
         setDraft(card)
     }
     private fun setDraft(card: Card) {
         saved["draftOwner"] = repository?.session()?.uid
-        saved["draft"] = JSONObject(card.record() + ("id" to card.id)).toString()
+        saved["draft"] = JSONObject(card.record() + mapOf("id" to card.id,"hasLocalFrontImage" to card.hasLocalFrontImage,"hasLocalBackImage" to card.hasLocalBackImage)).toString()
         update { it.copy(draft=card) }
     }
     fun discard() {
@@ -241,6 +327,12 @@ class VaultViewModel(application: Application, private val saved: SavedStateHand
         update { it.copy(draft=null, draftPreview=null, draftBackPreview=null) }
     }
     private fun clearFiles() {
+        saved["ownCardChoiceRequired"]=null
+        update {it.copy(ownCardChoiceRequired=false)}
+        saved["protectedEdits"]=null
+        saved["processedPeopleJson"]=null
+        saved["activeImportId"]=null;saved["importBackPath"]=null
+        setReview(emptyList(),emptyList(),0)
         listOf("original", "preview", "camera", "backOriginal", "backPreview", "cropSource").forEach { key -> saved.get<String>(key)?.let { File(it).delete() }; saved[key] = null }
         saved["cropBack"] = null
         saved["captureReview"]=null;saved["editingImages"]=null;saved["imageEditBack"]=null;saved["imageRevision"]=null;saved["pendingImageRevision"]=null
@@ -260,7 +352,7 @@ class VaultViewModel(application: Application, private val saved: SavedStateHand
         if (success) stageCrop(Uri.fromFile(File(path)),back) else { File(path).delete(); saved["camera"] = null }
     }
     fun stageCrop(uri:Uri,back:Boolean=false)=operation("Preparing photo…") {
-        require(!back || saved.get<String>("preview")!=null || state.value.draft?.imagePath?.isNotBlank()==true) {"Capture the front before adding the back."}
+        require(!back || saved.get<String>("preview")!=null || state.value.draft?.hasFrontImage==true) {"Capture the front before adding the back."}
         val source=try {withContext(Dispatchers.IO) {ImageCropper.stage(getApplication(),uri)}}
         finally {saved.get<String>("camera")?.let {File(it).delete()};saved["camera"]=null}
         saved.get<String>("cropSource")?.let {File(it).delete()}
@@ -288,7 +380,12 @@ class VaultViewModel(application: Application, private val saved: SavedStateHand
         }
         saved["captureReview"]=!editing
         raw.delete();saved["cropSource"]=null;saved["cropBack"]=null
-        update {it.copy(cropPath=null,cropBack=false,captureReview=!editing)}
+        val queuedBack=if(!back) saved.get<String>("importBackPath") else null
+        if(queuedBack!=null) {
+            val next=withContext(Dispatchers.IO) {ImageCropper.stage(getApplication(),Uri.fromFile(File(queuedBack)))}
+            saved["importBackPath"]=null;saved["cropSource"]=next.path;saved["cropBack"]=true
+            update {it.copy(cropPath=next.path,cropBack=true,captureReview=false)}
+        } else update {it.copy(cropPath=null,cropBack=false,captureReview=!editing)}
     }
     private fun storeSide(files:ScanFiles,back:Boolean) {
         val original=if(back) "backOriginal" else "original"
@@ -335,10 +432,18 @@ class VaultViewModel(application: Application, private val saved: SavedStateHand
         if(state.value.busy!=null || !state.value.captureReview) return
         val draft=state.value.draft ?: Card(id=UUID.randomUUID().toString())
         val source=saved.get<String>("sourceScanId") ?: UUID.randomUUID().toString().also {saved["sourceScanId"]=it}
-        val suggestion=CardLogic.extract(draft.rawText+"\n"+draft.backRawText).copy(id=draft.id,name="",
-            rawText=draft.rawText,backRawText=draft.backRawText,sourceScanId=source)
-        setDraft(suggestion);setPending(emptyList());setWarnings(scanEvidence().reviewWarnings)
-        saved["scanProposals"]=JSONObject(mapOf(suggestion.id to JSONObject(suggestion.record()+("id" to suggestion.id)))).toString()
+        val evidence=scanEvidence()
+        val frontText=draft.rawText.ifBlank {evidence.lines.filter {it.region.side==0}.joinToString("\n") {it.region.text}}
+        val backText=draft.backRawText.ifBlank {evidence.lines.filter {it.region.side==1}.joinToString("\n") {it.region.text}}
+        if(sourceBaselines().isEmpty()) {
+            val suggestion=CardLogic.extract(frontText+"\n"+backText).copy(id=draft.id,name="",
+                rawText=frontText,backRawText=backText,sourceScanId=source)
+            val result=ScanReconciliation.reconcile(VisualProposal(listOf(suggestion),emptyList()),draft,pendingPeople,emptyMap(),
+                emptyList(),state.value.fieldSources,state.value.sourceContactIndex,saved.get<String>("protectedEdits")?.let(::JSONObject),source)
+            saved["scanProposals"]=JSONObject(result.baselines.associate {it.id to JSONObject(it.record()+("id" to it.id))}).toString()
+            setDraft(result.cards.first())
+        } else setDraft(draft.copy(rawText=frontText,backRawText=backText))
+        setWarnings((state.value.extractionWarnings+evidence.reviewWarnings).distinct())
         saved["captureReview"]=false
         update {it.copy(captureReview=false,error=null)}
     }
@@ -366,9 +471,14 @@ class VaultViewModel(application: Application, private val saved: SavedStateHand
         val front=File(checkNotNull(saved.get<String>("preview")))
         val reverse=saved.get<String>("backPreview")?.let(::File)
         // Persist a draft before inference so cancellation/timeouts never pair an old person with a new photo.
-        setDraft(Card(id=UUID.randomUUID().toString(),rawText=frontText.take(12000),backRawText=backText.take(12000)))
-        setPending(emptyList()); setWarnings(emptyList())
+        val previous=state.value.draft
+        val baselines=sourceBaselines()
+        val previousPending=pendingPeople
+        val previousSources=state.value.fieldSources
+        val previousIndex=state.value.sourceContactIndex
+        setDraft((previous ?: Card(id=UUID.randomUUID().toString())).copy(rawText=frontText.take(12000),backRawText=backText.take(12000)))
         update { it.copy(draftPreview=front.path,draftBackPreview=reverse?.path) }
+        var usedFallback=false
         val result = if(visualModel.installed()) {
             try {
                 val regions=scanRegions()
@@ -376,17 +486,27 @@ class VaultViewModel(application: Application, private val saved: SavedStateHand
                 visualModel.extract(front,reverse,frontText,backText,hints,scanEvidence())
             }
             catch(e: CancellationException) { throw e }
-            catch(e: Exception) { VisualProposal(listOf(CardLogic.extract(frontText+"\n"+backText).copy(name="",rawText=frontText.take(12000),backRawText=backText.take(12000))),listOf(if(e is VisualReadingUnavailableException) e.message.orEmpty() else "Visual reading could not finish on this device. Check the photographs and enter the details, or retry.")) }
-        } else VisualProposal(listOf(CardLogic.extract(frontText+"\n"+backText).copy(name="",rawText=frontText.take(12000),backRawText=backText.take(12000))),listOf("Visual reading is not installed. Download it in Settings to identify people from the photograph. These are basic text suggestions."))
+            catch(e: Exception) { usedFallback=true; VisualProposal(listOf(CardLogic.extract(frontText+"\n"+backText).copy(name="",rawText=frontText.take(12000),backRawText=backText.take(12000))),listOf(if(e is VisualReadingUnavailableException) e.message.orEmpty() else "Visual reading could not finish on this device. Check the photographs and enter the details, or retry.")) }
+        } else {usedFallback=true;VisualProposal(listOf(CardLogic.extract(frontText+"\n"+backText).copy(name="",rawText=frontText.take(12000),backRawText=backText.take(12000))),listOf("Visual reading is not installed. Download it in Settings to identify people from the photograph. These are basic text suggestions."))}
+        if(usedFallback && baselines.isNotEmpty()) {
+            setWarnings((state.value.extractionWarnings+result.warnings+scanEvidence().reviewWarnings+
+                "The previous details and remaining people were kept because the new visual reading did not finish.").distinct())
+            return
+        }
         val sourceScanId=saved.get<String>("sourceScanId") ?: UUID.randomUUID().toString().also {saved["sourceScanId"]=it}
-        val people=result.contacts.map { it.copy(id=UUID.randomUUID().toString(),sourceScanId=sourceScanId) }
-        saved["scanProposals"]=JSONObject(people.associate {it.id to JSONObject(it.record()+("id" to it.id))}).toString()
-        setPending(people.drop(1)); setWarnings((result.warnings+scanEvidence().reviewWarnings).distinct())
-        setDraft(people.first())
+        val reconciled=ScanReconciliation.reconcile(result,previous,previousPending,baselines,processedPeople(),previousSources,previousIndex,
+            saved.get<String>("protectedEdits")?.let(::JSONObject),sourceScanId)
+        saved["scanProposals"]=JSONObject(reconciled.baselines.associate {it.id to JSONObject(it.record()+("id" to it.id))}).toString()
+        if(reconciled.ownCardChoiceRequired) saved["ownCardChoiceRequired"]=true
+        update {it.copy(ownCardChoiceRequired=saved.get<Boolean>("ownCardChoiceRequired")==true)}
+        setPending(reconciled.cards.drop(1));setWarnings((reconciled.warnings+scanEvidence().reviewWarnings).distinct())
+        setDraft(reconciled.cards.first())
+        setReview(reconciled.sources,reconciled.issues,0)
         update { it.copy(draftPreview=front.path,draftBackPreview=reverse?.path) }
     }
 
     fun save() = operation("Saving your card…") {
+        check(!state.value.ownCardChoiceRequired) {"Choose which person is you before saving this joint card."}
         val card = checkNotNull(state.value.draft)
         var historyFailed=false
         CardLogic.validate(card)?.let { error(it) }
@@ -411,9 +531,12 @@ class VaultViewModel(application: Application, private val saved: SavedStateHand
         update { it.copy(savedEvent=it.savedEvent+1,savedName=card.displayLabel) }
         saved["selected"] = card.id
         if(pendingPeople.isNotEmpty()) {
+            rememberProcessedPerson()
             val next=pendingPeople.first(); setPending(pendingPeople.drop(1)); setDraft(next)
+            saved["protectedEdits"]=null;setReview(state.value.fieldSources,state.value.fieldIssues,state.value.sourceContactIndex+1)
             update { it.copy(selectedId=card.id,message="${card.displayLabel} saved. Review the next person from this card.") }
         } else {
+            saved.get<String>("activeImportId")?.let {ImportQueue(getApplication(),checkNotNull(repository?.session()).uid).complete(it)}
             clearFiles(); saved["draft"] = null;saved["selected"] = null
             update { it.copy(draft=null, draftPreview=null, draftBackPreview=null, selectedId=null, message=if(historyFailed) "Card saved. Correction history could not be updated on this device." else "Card saved") }
         }
@@ -427,13 +550,25 @@ class VaultViewModel(application: Application, private val saved: SavedStateHand
         }
     }
     fun delete(card: Card) = operation("Removing card and images…") {
-        checkNotNull(repository).delete(card); withContext(Dispatchers.IO) {runCatching {learning().forgetCard(card.id)}}; select(null); update { it.copy(message="Card deleted") }
+        checkNotNull(repository).delete(card); select(null); update { it.copy(message="Card moved to recovery bin") }
+    }
+    fun restoreCard(card:Card)=operation("Restoring card…") {checkNotNull(repository).restore(card);update {it.copy(message="Card restored")}}
+    fun purgeCard(card:Card)=operation("Deleting permanently…") {checkNotNull(repository).purge(card);withContext(Dispatchers.IO) {learning().forgetCard(card.id)};update {it.copy(message="Card permanently deleted")}}
+    fun loadVersions(card:Card)=operation("Opening history…") {update {it.copy(versions=emptyList())};val versions=checkNotNull(repository).versions(card.id);update {it.copy(versions=versions)}}
+    fun restoreVersion(card:Card,version:CardVersion)=operation("Restoring version…") {checkNotNull(repository).restoreVersion(card.id,version.id);loadVersionsAfter(card)}
+    private suspend fun loadVersionsAfter(card:Card) {val versions=checkNotNull(repository).versions(card.id);update {it.copy(versions=versions,message="Earlier version restored")}}
+    fun resolveConflict(cardId:String,keepLocal:Boolean)=operation("Resolving conflict…") {checkNotNull(repository).resolveConflict(cardId,keepLocal)}
+    fun mergeCards(target:Card,source:Card)=operation("Merging cards…") {val merged=checkNotNull(repository).merge(target,source);select(merged);update {it.copy(message="Cards merged. The second card is in recovery.")}}
+    fun addDatedNote(card:Card,text:String)=operation("Saving note…") {require(text.isNotBlank());checkNotNull(repository).save(card.copy(datedNotes=card.datedNotes+DatedNote(text=text.take(4000))),null)}
+    fun organize(ids:Set<String>,tag:String,collection:String)=operation("Organizing cards…") {
+        state.value.cards.filter {it.id in ids}.forEach {card->checkNotNull(repository).save(card.copy(tags=(card.tags+listOf(tag).filter(String::isNotBlank)).distinct(),collections=(card.collections+listOf(collection).filter(String::isNotBlank)).distinct()),null)}
+        update {it.copy(message="Organization saved")}
     }
     fun deleteAccount(password: String) = operation("Deleting account and card images…") {
         val memory=learning()
         checkNotNull(repository).deleteAccount(password)
         withContext(Dispatchers.IO) {memory.clear()}
-        listener?.cancel(); cleanup?.cancel(); historyLoad?.cancel(); searchEngine.clear(); clearFiles(); saved["draft"] = null; saved["selected"] = null
+        listener?.cancel();localListener?.cancel(); cleanup?.cancel(); historyLoad?.cancel(); searchEngine.clear(); clearFiles(); saved["draft"] = null; saved["selected"] = null
         update { VaultState(loading=false, message="Account deleted") }
     }
     override fun onCleared() {

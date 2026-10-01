@@ -17,14 +17,16 @@ internal object SurfaceTextures {
     private fun leather():ShaderBrush {
         val side=256
         val random=Random(341)
-        val cells=16
+        // Approximately five physical pixels per grain: the shell reads as
+        // fine leather, not the large, hard scales of the earlier height field.
+        val cells=48
         val cell=side.toFloat()/cells
         val seeds=Array(cells*cells) {i->
             floatArrayOf((i%cells+.20f+random.nextFloat()*.60f)*cell,(i/cells+.20f+random.nextFloat()*.60f)*cell)
         }
         val heights=FloatArray(side*side)
         for(y in 0 until side) for(x in 0 until side) {
-            val gx=x/cell.toInt();val gy=y/cell.toInt()
+            val gx=(x/cell).toInt();val gy=(y/cell).toInt()
             var nearest=Float.MAX_VALUE
             var second=Float.MAX_VALUE
             for(dy in -1..1) for(dx in -1..1) {
@@ -37,7 +39,7 @@ internal object SurfaceTextures {
             }
             // Narrow valleys separate rounded pebbles. Fine pore variation is low
             // amplitude so the visible surface is relief, not television noise.
-            heights[y*side+x]=(1f-exp(-(second-nearest)*.55f))*.85f+random.nextFloat()*.035f
+            heights[y*side+x]=(1f-exp(-(second-nearest)*.80f))*.52f+random.nextFloat()*.022f
         }
         val pixels=IntArray(side*side)
         for(y in 0 until side) for(x in 0 until side) {
@@ -47,7 +49,7 @@ internal object SurfaceTextures {
             val below=heights[((y+1)%side)*side+x]
             val light=((right-left)*.6f+(below-above)*.8f).coerceIn(-1f,1f)
             val valley=(1f-heights[y*side+x]).coerceIn(0f,1f)
-            val alpha=((abs(light)*52f)+valley*12f).toInt().coerceIn(0,58)
+            val alpha=((abs(light)*28f)+valley*3f).toInt().coerceIn(0,24)
             pixels[y*side+x]=(alpha shl 24) or if(light>0) 0x00CAE0EC else 0x00021931
         }
         return ShaderBrush(ImageShader(Bitmap.createBitmap(pixels,side,side,Bitmap.Config.ARGB_8888).asImageBitmap(),TileMode.Repeated,TileMode.Repeated))

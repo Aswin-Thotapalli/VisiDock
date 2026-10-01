@@ -105,11 +105,25 @@ import kotlin.math.abs
             }) {
                 // Project the turning leaf onto the supporting plane. Its cast shadow
                 // narrows edge-on but never rotates out of the screen with the photograph.
-                Box(Modifier.matchParentSize().graphicsLayer {
-                    scaleX=abs(cos(Math.toRadians(angle.value.toDouble())).toFloat()).coerceAtLeast(.05f)*(1f-handoff.value*.035f)
-                    scaleY=1f-handoff.value*.035f
-                }.physicalSurface(depthDp=12f+abs(sin(Math.toRadians(angle.value.toDouble())).toFloat())*16f+handoff.value*10f,
-                    shape=RoundedCornerShape(14.dp),material=PhysicalMaterial.Paper,drawBevel=false))
+                Canvas(Modifier.matchParentSize()) {
+                    val turn=abs(sin(Math.toRadians(angle.value.toDouble())).toFloat())
+                    val depth=12f+turn*16f+handoff.value*10f
+                    val extent=1f-handoff.value*.035f
+                    val projectedWidth=size.width*abs(cos(Math.toRadians(angle.value.toDouble())).toFloat()).coerceAtLeast(.05f)*extent
+                    val projectedHeight=size.height*extent
+                    val center=Offset(size.width/2f+depth*.22f.dp.toPx(),size.height/2f+depth*.65f.dp.toPx())
+                    val blur=(2f+depth*.5f).dp.toPx()
+                    // A filled, feathered projection casts no hollow silhouette.
+                    // The old clipped-out shadow exposed a pale outlined "second
+                    // card" when the real photo lifted away during the handoff.
+                    for(layer in 24 downTo 1) {
+                        val spread=blur*layer/24f
+                        drawRoundRect(Color(0xFF031730).copy(alpha=.009f),
+                            topLeft=center-Offset(projectedWidth/2f+spread,projectedHeight/2f+spread),
+                            size=Size(projectedWidth+spread*2f,projectedHeight+spread*2f),
+                            cornerRadius=CornerRadius(14.dp.toPx()+spread))
+                    }
+                }
                 Box(cardImageTransition(front,shownBack).fillMaxWidth().aspectRatio(1.65f).graphicsLayer {
                     val edge=sin(Math.toRadians(angle.value.toDouble())).toFloat()
                     rotationY=angle.value;translationY=(-edge*16f-handoff.value*24f)*density
@@ -146,6 +160,15 @@ import kotlin.math.abs
                         }
                     }
                 }
+                if(turning) Canvas(Modifier.matchParentSize()) {
+                    // The face collapses in projection, but the stock still has a thin edge.
+                    val edge=abs(sin(Math.toRadians(angle.value.toDouble())).toFloat())
+                    val visibility=edge*edge*edge*edge*edge*edge*edge*edge
+                    val lift=edge*16.dp.toPx()
+                    drawLine(Color(0xFFD5E4F0).copy(alpha=visibility*.85f),
+                        Offset(size.width/2f,-lift+8.dp.toPx()),Offset(size.width/2f,size.height-lift-8.dp.toPx()),
+                        1.2.dp.toPx())
+                }
             }
             AnimatedVisibility(scanned,enter=expandVertically(DockMotion.spec(450))+fadeIn(DockMotion.spec(300)),exit=fadeOut()) {
                 Column(Modifier.fillMaxWidth().physicalSurface(depthDp=3f,shape=RoundedCornerShape(18.dp),material=PhysicalMaterial.Paper)
@@ -156,13 +179,19 @@ import kotlin.math.abs
                 }
             }
             Spacer(Modifier.height(24.dp))
-            AnimatedContent(Triple(scanned,turning,face),label="Reading phase") {state->
-                Text(if(state.first) {if(back!=null) "Organizing details from both sides" else "Organizing the details"}
-                    else if(state.second) "Turning to the back" else if(state.third==0) "Reading the front" else "Reading the back",
-                    modifier=Modifier.fillMaxWidth(),textAlign=TextAlign.Center,style=MaterialTheme.typography.titleLarge)
+            val displayedPhase=when {
+                scanned && analysisReady -> "Ready to review"
+                scanned -> if(back!=null) "Organizing details from both sides" else "Organizing the details"
+                turning -> "Turning to the back"
+                face==0 -> "Reading the front"
+                else -> "Reading the back"
+            }
+            AnimatedContent(displayedPhase,label="Reading phase") {label->
+                Text(label,modifier=Modifier.fillMaxWidth(),textAlign=TextAlign.Center,style=MaterialTheme.typography.titleLarge)
             }
             Spacer(Modifier.height(10.dp))
-            Text(if(!scanned) "Reading printed text on this side" else phase,style=MaterialTheme.typography.bodyMedium,color=MaterialTheme.colorScheme.onSurfaceVariant,
+            Text(if(scanned && analysisReady) "Review the suggested details before saving." else if(!scanned) "Reading printed text on this side" else phase,
+                style=MaterialTheme.typography.bodyMedium,color=MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign=TextAlign.Center,modifier=Modifier.semantics {liveRegion=LiveRegionMode.Polite})
             Spacer(Modifier.height(8.dp));Text("Processed privately on your phone",style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
             Spacer(Modifier.height(16.dp));DockTextButton(onClick={if(active) onCancel()},enabled=active) {Text("Cancel reading")}

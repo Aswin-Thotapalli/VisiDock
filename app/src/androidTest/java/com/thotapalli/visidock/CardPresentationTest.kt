@@ -16,7 +16,8 @@ import org.junit.Test
 import java.io.File
 
 class CardPresentationTest {
-    @get:Rule val compose=createAndroidComposeRule<MainActivity>()
+    val compose=createAndroidComposeRule<MainActivity>()
+    @get:Rule val isolated=org.junit.rules.RuleChain.outerRule(IsolatedDemoDraftRule()).around(compose)
 
     @Test fun twoSidedDraftCanTurnBothWaysWithoutLosingEditedIdentity() {
         assumeTrue(BuildConfig.DEMO)

@@ -50,7 +50,7 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import java.io.File
 
 /** Camera owns its lifecycle; framing is a guide, never a claim of edge detection. */
-@Composable fun CaptureScreen(back: Boolean, file: () -> File, onResult: (Boolean) -> Unit, onClose: () -> Unit) {
+@Composable fun CaptureScreen(back: Boolean, file: () -> File, onResult: (Boolean) -> Unit, onClose: () -> Unit, batchMode:Boolean=false, handoffBusy:Boolean=false, capturedCount:Int=0) {
     val context=LocalContext.current
     val compact=LocalConfiguration.current.screenHeightDp<500
     val haptic=LocalHapticFeedback.current
@@ -62,7 +62,8 @@ import java.io.File
     var camera by remember {mutableStateOf<Camera?>(null)}
     var provider by remember {mutableStateOf<ProcessCameraProvider?>(null)}
     var error by remember {mutableStateOf<String?>(null)}
-    var taking by remember {mutableStateOf(false)}
+    var shutterBusy by remember {mutableStateOf(false)}
+    val taking=shutterBusy || handoffBusy
     var torch by remember {mutableStateOf(false)}
     var streaming by remember {mutableStateOf(false)}
     var bindAttempt by remember {mutableIntStateOf(0)}
@@ -158,12 +159,16 @@ import java.io.File
             if(shutterAlpha>0f) drawRect(Color(0xFF99DDEB).copy(alpha=shutterAlpha*.5f))
         }
         Column(Modifier.fillMaxSize().safeDrawingPadding().padding(if(compact) 12.dp else 24.dp),horizontalAlignment=Alignment.CenterHorizontally) {
-            Surface(color=Color(0xFF071D49).copy(alpha=.84f),shape=RoundedCornerShape(24.dp)) {
+            Surface(modifier=Modifier.physicalSurface(depthDp=5f,shape=RoundedCornerShape(24.dp),material=PhysicalMaterial.Metal),color=Color(0xFF071D49).copy(alpha=.92f),shape=RoundedCornerShape(24.dp)) {
             Row(Modifier.fillMaxWidth().padding(6.dp),verticalAlignment=Alignment.CenterVertically) {
                 DockIconButton(enabled=!taking,onClick=onClose) {Icon(Icons.Outlined.Close,"Close camera",tint=Color.White)}
                 Column(Modifier.weight(1f).padding(start=4.dp)) {
                     Text(if(back) "BACK" else "FRONT",color=Color(0xFF99DDEB),style=MaterialTheme.typography.labelSmall)
-                    Text("Frame your card",color=Color.White,style=MaterialTheme.typography.titleMedium)
+                    if(batchMode) AnimatedContent(capturedCount,label="Captured queue count",transitionSpec={
+                        (fadeIn(DockMotion.spec(180))+slideInVertically(DockMotion.spec(180)) {it/3}) togetherWith
+                            (fadeOut(DockMotion.spec(100))+slideOutVertically(DockMotion.spec(150)) {-it/3})
+                    }) {count->Text("Batch capture · $count queued",color=Color.White,style=MaterialTheme.typography.titleMedium)}
+                    else Text("Frame your card",color=Color.White,style=MaterialTheme.typography.titleMedium)
                 }
                 if(camera?.cameraInfo?.hasFlashUnit()==true) DockIconToggleButton(torch,{enabled->
                     val future=camera?.cameraControl?.enableTorch(enabled)
@@ -173,7 +178,7 @@ import java.io.File
             }
             Spacer(Modifier.weight(1f))
             AnimatedVisibility(visible=error!=null || !allowed,enter=fadeIn(DockMotion.spec(180))+expandVertically(DockMotion.spec(240)),exit=fadeOut(DockMotion.spec(120))+shrinkVertically(DockMotion.spec(180))) {
-            Surface(color=Color(0xFF071D49).copy(alpha=.94f),shape=RoundedCornerShape(24.dp),modifier=Modifier.fillMaxWidth().padding(bottom=if(compact) 6.dp else 16.dp)) {
+            Surface(color=Color(0xFF071D49).copy(alpha=.94f),shape=RoundedCornerShape(24.dp),modifier=Modifier.fillMaxWidth().padding(bottom=if(compact) 6.dp else 16.dp).physicalSurface(depthDp=6f,shape=RoundedCornerShape(24.dp))) {
             Column(Modifier.heightIn(max=if(compact) 110.dp else 220.dp).verticalScroll(rememberScrollState()).padding(16.dp).dockReflow()) {
                 Text(error ?: "Allow camera access to photograph your card.",color=Color.White,modifier=Modifier.semantics {liveRegion=LiveRegionMode.Polite})
                 Row {
@@ -199,18 +204,18 @@ import java.io.File
                     drawCircle(Color(0xFF99DDEB).copy(alpha=.14f+acquisition*.24f),size.minDimension/2-8.dp.toPx(),style=Stroke(5.dp.toPx()))
                 }
             FilledIconButton(enabled=allowed && streaming && camera!=null && !taking,interactionSource=interactions,onClick={
-                taking=true;error=null
+                shutterBusy=true;error=null
                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                 capture.targetRotation=preview.display?.rotation ?: android.view.Surface.ROTATION_0
                 runCatching { capture.takePicture(ImageCapture.OutputFileOptions.Builder(file()).build(),ContextCompat.getMainExecutor(context),object:ImageCapture.OnImageSavedCallback {
-                    override fun onImageSaved(output:ImageCapture.OutputFileResults) {onResult(true)}
-                    override fun onError(exception:ImageCaptureException) {taking=false;error="Couldn't capture that photo. Try again.";onResult(false)}
-                }) }.onFailure {taking=false;error="Couldn't save the capture. Try again.";onResult(false)}
-            },modifier=Modifier.size(if(compact) 60.dp else 78.dp).graphicsLayer {scaleX=shutterScale;scaleY=shutterScale}.semantics {contentDescription=if(taking) "Saving captured photo" else "Capture card"},shape=CircleShape,colors=IconButtonDefaults.filledIconButtonColors(containerColor=Color(0xFF99DDEB),contentColor=Color(0xFF071D49))) {
+                    override fun onImageSaved(output:ImageCapture.OutputFileResults) {onResult(true);if(batchMode) shutterBusy=false}
+                    override fun onError(exception:ImageCaptureException) {shutterBusy=false;error="Couldn't capture that photo. Try again.";onResult(false)}
+                }) }.onFailure {shutterBusy=false;error="Couldn't save the capture. Try again.";onResult(false)}
+            },modifier=Modifier.size(if(compact) 60.dp else 78.dp).graphicsLayer {scaleX=shutterScale;scaleY=shutterScale}.physicalSurface(depthDp=8f,pressedFraction={if(pressed || taking) 1f else 0f},shape=CircleShape,material=PhysicalMaterial.Metal).semantics {contentDescription=if(taking) "Saving captured photo" else "Capture card"},shape=CircleShape,colors=IconButtonDefaults.filledIconButtonColors(containerColor=Color(0xFF99DDEB),contentColor=Color(0xFF071D49))) {
                 if(taking) CircularProgressIndicator(Modifier.size(32.dp),color=Color(0xFF071D49)) else Icon(Icons.Outlined.CameraAlt,null,Modifier.size(32.dp))
             }
             }
-            if(!compact) {Spacer(Modifier.height(12.dp));Text("Tap to focus · edges detected after capture",color=Color.White,style=MaterialTheme.typography.bodySmall)}
+            if(!compact) {Spacer(Modifier.height(12.dp));Text(if(batchMode) "Close when finished · pair sides in the queue" else "Tap to focus · edges detected after capture",color=Color.White,style=MaterialTheme.typography.bodySmall)}
         }
     }
 }

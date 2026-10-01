@@ -14,7 +14,8 @@ object CorrectionPolicy {
         return value.length>=3 && Regex("(?<![\\p{L}\\p{N}])"+Regex.escape(value)+"(?![\\p{L}\\p{N}])").containsMatchIn(normalize(text))
     }
     fun fields(card: Card) = linkedMapOf("name" to card.name,"role" to card.role,"company" to card.company,
-        "phone" to card.contactPhones.joinToString("; ") { it.number },"email" to card.email,"website" to card.website,"address" to card.address)
+        "phone" to card.contactPhones.joinToString("; ") { it.number },"email" to card.contactEmails.joinToString("; "),
+        "website" to card.contactWebsites.joinToString("; "),"address" to card.address)
 
     /** Activity includes typo fixes and removals even when they cannot safely become training labels. */
     fun activity(before: Card, after: Card, timestamp: Long = System.currentTimeMillis()): List<CorrectionActivity> {
@@ -29,17 +30,16 @@ object CorrectionPolicy {
 
     fun learn(proposed: Card, corrected: Card): List<LearnedLabel> {
         val evidence=proposed.rawText+"\n"+proposed.backRawText
-        val before=fields(proposed)
-        val otherFields = fields(corrected).filterKeys { it != "phone" }
-        val phones = corrected.contactPhones.map { it.number }.filter { value ->
-            proposed.contactPhones.none { normalize(it.number) == normalize(value) } && appears(value, evidence) &&
-                otherFields.values.none { normalize(it) == normalize(value) }
-        }.map { LearnedLabel(it, "phone", corrected.id) }
-        return phones + otherFields.mapNotNull { (field,value) ->
-            if(normalize(before.getValue(field))!=normalize(value) && appears(value,evidence) &&
-                otherFields.values.count {normalize(it)==normalize(value)}==1 &&
-                corrected.contactPhones.none {normalize(it.number)==normalize(value)})
-                LearnedLabel(value.trim().take(1000),field,corrected.id) else null
+        fun values(card: Card): List<Pair<String, String>> = fields(card).filterKeys {
+            it !in listOf("phone", "email", "website")
+        }.toList() + card.contactPhones.map { "phone" to it.number } +
+            card.contactEmails.map { "email" to it } + card.contactWebsites.map { "website" to it }
+        val before = values(proposed)
+        val current = values(corrected)
+        return current.mapNotNull { (field, value) ->
+            if (before.none { it.first == field && normalize(it.second) == normalize(value) } && appears(value, evidence) &&
+                current.count { normalize(it.second) == normalize(value) } == 1)
+                LearnedLabel(value.trim().take(1000), field, corrected.id) else null
         }
     }
 

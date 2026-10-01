@@ -125,6 +125,15 @@ private val destinations = listOf(Destination("Collection", Icons.Outlined.Style
     var discard by rememberSaveable { mutableStateOf(false) }
     val gallery = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { it?.let {uri->vm.stageCrop(uri)} }
     var capture by rememberSaveable { mutableStateOf<Boolean?>(null) }
+    var imports by rememberSaveable {mutableStateOf(false)}
+    val launchDestination by DockLaunchRequests.pending.collectAsStateWithLifecycle()
+    LaunchedEffect(launchDestination,state.session?.uid,state.busy,state.draft?.id) {
+        if(state.session!=null && state.draft==null && state.busy==null) when(launchDestination) {
+            "scan"->{vm.beginCapture();capture=false;DockLaunchRequests.consume("scan")}
+            "my_card"->{tab=2;vm.select(null);DockLaunchRequests.consume("my_card")}
+            "import"->{imports=true;DockLaunchRequests.consume("import")}
+        }
+    }
     var cameraStartedNewCapture by rememberSaveable {mutableStateOf(false)}
     var awaitingCrop by rememberSaveable {mutableStateOf(false)}
     LaunchedEffect(awaitingCrop,state.cropPath,state.busy,state.error) {
@@ -151,6 +160,11 @@ private val destinations = listOf(Destination("Collection", Icons.Outlined.Style
     SideEffect {if(state.scanSide!=null) lastReadBack=readingBack}
     BackHandler(state.draft != null || state.selectedId != null || tab != 0) {
         when { state.captureReview -> discard=true; state.draft != null -> discard=true; state.selectedId != null -> vm.select(null); else -> tab=0 }
+    }
+    if(imports && state.session!=null) {
+        BackHandler {imports=false}
+        ImportWorkspace(checkNotNull(state.session).uid,onImportPair={item->imports=false;vm.importPair(item)},onQrContact={card->imports=false;vm.importContact(card)},onClose={imports=false})
+        return
     }
     if(capture!=null && state.cropPath==null) {
         val back=capture==true
@@ -261,7 +275,9 @@ private val destinations = listOf(Destination("Collection", Icons.Outlined.Style
                         "captureReview" -> CaptureReviewScreen(state.copy(draft=screen.draft,draftPreview=screen.preview,draftBackPreview=screen.backPreview),vm,{capture=true},{discard=true})
                         "reading" -> if(screen.draft!=null && screen.preview!=null) ReadingStage(screen.draft,vm,screen.preview,screen.backPreview,screen.scanSide ?: 0,screen.phase,route=="reading",regions=state.scanRegions,analysisReady=state.scanAnalysisReady,onPresented=vm::finishScanPresentation,onCancel=vm::cancelOperation)
                         "editor" -> if(screen.draft != null) EditorScreen(state.copy(draft=screen.draft,draftPreview=screen.preview,draftBackPreview=screen.backPreview), vm, onBack={discard=true},onSave={card->receiptCard=card;receiptPreview=screen.preview;receiptPhotoBack=screen.photoBack;vm.save()})
-                        "settings" -> SettingsScreen(state, vm)
+                        "settings" -> SettingsScreen(state, vm,
+                            onOwnCamera={vm.newOwnCard();cameraStartedNewCapture=true;capture=false},
+                            onOwnImport={vm.newOwnCard();gallery.launch("image/*")},onImports={imports=true})
                         "detail" -> if(screen.card != null) DetailScreen(screen.card, vm, state.busy != null, onBack={vm.select(null)},onCaptureSide={card,back->vm.prepareSideEdit(card,back);capture=back})
                         else -> Row(Modifier.fillMaxSize()) {
                             CollectionScreen(state, query, {query=it}, screen.destination==1, vm, Modifier.weight(1f), if(screen.destination==1) favoritesListState else collectionListState, onAdd={add=true},caseFocusId=caseFocusId,onCaseFocus={caseFocusId=it},compact=compactCollection,onCompact={compactCollection=it})
@@ -306,9 +322,11 @@ private val destinations = listOf(Destination("Collection", Icons.Outlined.Style
     var searching by remember { mutableStateOf(query.isNotBlank()) }
     var semantic by remember { mutableStateOf(false) }
     var unavailable by remember { mutableStateOf(false) }
-    LaunchedEffect(state.cards, query, favorites) {
+    var collectionFilter by rememberSaveable(favorites) {mutableStateOf<String?>(null)}
+    val collections=remember(state.cards) {state.cards.flatMap {it.collections}.distinct().sorted()}
+    LaunchedEffect(state.cards, query, favorites,collectionFilter) {
         searching=query.isNotBlank()
-        val cards=state.cards.filter { !favorites || it.favorite }
+        val cards=state.cards.filter { (!favorites || it.favorite) && (collectionFilter==null || collectionFilter in it.collections) }
         results=withContext(Dispatchers.Default) { CardLogic.search(cards,query) }
         semantic=false; unavailable=false
         if(query.isNotBlank()) {
@@ -355,6 +373,10 @@ private val destinations = listOf(Destination("Collection", Icons.Outlined.Style
             DockFilterChip(selected=!compact,onClick={onCompact(false)},label={Text("Case")})
             DockFilterChip(selected=compact,onClick={onCompact(true)},label={Text("List")})
         }
+        if(collections.isNotEmpty() || collectionFilter!=null) Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal=24.dp),horizontalArrangement=Arrangement.spacedBy(8.dp)) {
+            DockFilterChip(collectionFilter==null,{collectionFilter=null},label={Text("All collections")})
+            collections.forEach {name->DockFilterChip(collectionFilter==name,{collectionFilter=name},label={Text(name)})}
+        }
         val snapshot=CollectionSnapshot(when {state.loading || (searching && results.isEmpty())->"loading";results.isEmpty()->"empty";else->"cards"},results)
         AnimatedContent(snapshot,contentKey={it.phase},modifier=Modifier.weight(1f),label="Collection results",transitionSpec={fadeIn(DockMotion.spec(160)) togetherWith fadeOut(DockMotion.spec(90))}) {content->
             when(content.phase) {
@@ -393,9 +415,9 @@ private val destinations = listOf(Destination("Collection", Icons.Outlined.Style
     val scale=animateFloatAsState(if(pressed) .978f else 1f,if(pressed) DockMotion.spec(90) else DockMotion.settle(460f,.86f),label="Card lift")
     Surface(onClick={haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove);onClick()}, interactionSource=interactions, modifier=Modifier.graphicsLayer {scaleX=scale.value;scaleY=scale.value}.physicalSurface(depthDp=5f,pressedFraction={(1f-scale.value)/.022f},shape=MaterialTheme.shapes.large,material=PhysicalMaterial.Paper), color=if(selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface, shape=MaterialTheme.shapes.large) {
         Column {
-            if(card.imagePath.isNotBlank()) CollectionPhoto(card,vm)
+            if(card.hasFrontImage) CollectionPhoto(card,vm)
             Row(Modifier.fillMaxWidth().padding(18.dp), verticalAlignment=Alignment.CenterVertically, horizontalArrangement=Arrangement.spacedBy(14.dp)) {
-                if(card.imagePath.isBlank()) Avatar(card,48)
+                if(!card.hasFrontImage) Avatar(card,48)
                 Column(Modifier.weight(1f),verticalArrangement=Arrangement.spacedBy(4.dp)) {
                     Text(card.displayLabel,style=MaterialTheme.typography.titleLarge,maxLines=2,overflow=TextOverflow.Ellipsis)
                     Text(listOf(card.role,card.company.takeIf {card.name.isNotBlank()}.orEmpty()).filter(String::isNotBlank).joinToString(" · ").ifBlank {if(card.name.isBlank()) "Company card" else "Contact details"},style=MaterialTheme.typography.bodyMedium,color=MaterialTheme.colorScheme.onSurfaceVariant,maxLines=2,overflow=TextOverflow.Ellipsis)
@@ -433,7 +455,7 @@ private object CardBitmapCache {
 internal data class CardPhotoState(val bitmap:android.graphics.Bitmap?=null,val loading:Boolean=true)
 @Composable internal fun cardPhoto(card:Card,vm:VaultViewModel,back:Boolean=false,local:String?=null,retry:Int=0):CardPhotoState {
     val account=LocalPhotoAccount.current
-    val source=local ?: if(back) card.backImagePath else card.imagePath
+    val source=local ?: "${if(back) card.backImagePath else card.imagePath}|${card.sourceScanId}"
     val key="$account|${if(local!=null) "local" else card.id}|$back|$source"
     val initial=remember(key) {CardBitmapCache.get(key)}
     val result by key(key) { produceState(CardPhotoState(initial,initial==null),key,retry) {
@@ -454,7 +476,7 @@ internal data class CardPhotoState(val bitmap:android.graphics.Bitmap?=null,val 
     val photo=cardPhoto(card,vm,retry=retry)
     Box(cardImageTransition(card.id).fillMaxWidth().height(190.dp).background(MaterialTheme.colorScheme.surfaceContainer),contentAlignment=Alignment.Center) {
         CardPhotoContent(photo,"Card photo for ${card.displayLabel}","Load photo") {retry++}
-        if(card.backImagePath.isNotBlank()) Surface(Modifier.align(Alignment.BottomEnd).padding(10.dp),color=MaterialTheme.colorScheme.surface,shape=CircleShape) {Row(Modifier.padding(horizontal=10.dp,vertical=6.dp),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(5.dp)) {Icon(Icons.Outlined.Flip,null,Modifier.size(14.dp));Text("2 sides",style=MaterialTheme.typography.labelSmall)}}
+        if(card.hasBackImage) Surface(Modifier.align(Alignment.BottomEnd).padding(10.dp),color=MaterialTheme.colorScheme.surface,shape=CircleShape) {Row(Modifier.padding(horizontal=10.dp,vertical=6.dp),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(5.dp)) {Icon(Icons.Outlined.Flip,null,Modifier.size(14.dp));Text("2 sides",style=MaterialTheme.typography.labelSmall)}}
     }
 }
 
@@ -462,7 +484,7 @@ internal data class CardPhotoState(val bitmap:android.graphics.Bitmap?=null,val 
     var retry by remember(card.id,card.imagePath) {mutableIntStateOf(0)}
     val photo=cardPhoto(card,vm,retry=retry)
     Box(cardImageTransition(card.id).fillMaxSize(),contentAlignment=Alignment.Center) {
-        if(card.imagePath.isNotBlank()) CardPhotoContent(photo,"Card photo for ${card.displayLabel}","Load photo") {retry++}
+        if(card.hasFrontImage) CardPhotoContent(photo,"Card photo for ${card.displayLabel}","Load photo") {retry++}
         else Column(Modifier.fillMaxSize().materialUnderlay(.55f).padding(24.dp),verticalArrangement=Arrangement.Center) {
             Text(card.company.ifBlank {"VISIDOCK"},color=Color(0xFF376DA6),style=MaterialTheme.typography.labelMedium)
             Spacer(Modifier.height(16.dp));Text(card.displayLabel,color=Color(0xFF102C50),style=MaterialTheme.typography.headlineSmall)
@@ -538,8 +560,8 @@ internal data class CardPhotoState(val bitmap:android.graphics.Bitmap?=null,val 
 }
 
 @Composable private fun Photo(card: Card, vm: VaultViewModel, local: String?=null, localBack: String?=null) {
-    val hasFront=local!=null || card.imagePath.isNotBlank()
-    val hasBack=localBack!=null || card.backImagePath.isNotBlank()
+    val hasFront=local!=null || card.hasFrontImage
+    val hasBack=localBack!=null || card.hasBackImage
     if(!hasFront) return
     val haptic=LocalHapticFeedback.current
     val initialBack=LocalInitialPhotoBack.current && hasBack
@@ -579,9 +601,9 @@ internal data class CardPhotoState(val bitmap:android.graphics.Bitmap?=null,val 
                 // Keep the grounding shadow flat: native shadows on a rotated 3D
                 // layer can project a long triangular artifact across nearby controls.
                 val edge=if(enabled) kotlin.math.abs(kotlin.math.sin(turn.angle*Math.PI.toFloat()/180f)) else 0f
-                if(edge>.001f) drawOval(
+                drawOval(
                     brush=androidx.compose.ui.graphics.Brush.radialGradient(
-                        listOf(navy.copy(alpha=edge*.14f),Color.Transparent),
+                        listOf(navy.copy(alpha=.065f+edge*.14f),Color.Transparent),
                         center=Offset(size.width*.5f,size.height*.82f),radius=size.width*.48f),
                     topLeft=Offset(size.width*.05f,size.height*.60f),
                     size=androidx.compose.ui.geometry.Size(size.width*.9f,size.height*.4f))
@@ -647,7 +669,7 @@ internal data class CardPhotoState(val bitmap:android.graphics.Bitmap?=null,val 
                     }) {Icon(Icons.Outlined.Call,"Call ${phone.label.ifBlank {"phone ${index+1}"}} ${phone.number}")}
                 }
             }
-            listOf("Email" to card.email, "Website" to card.website, "Address" to card.address).filter {it.second.isNotBlank()}.forEach { (label,value) ->
+            (card.contactEmails.map {"Email" to it}+card.contactWebsites.map {"Website" to it}+listOf("Address" to card.address)).filter {it.second.isNotBlank()}.forEach { (label,value) ->
                 Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(12.dp)) {
                     Column(Modifier.weight(1f),verticalArrangement=Arrangement.spacedBy(4.dp)) {Text(label,style=MaterialTheme.typography.labelMedium,color=MaterialTheme.colorScheme.onSurfaceVariant); androidx.compose.foundation.text.selection.SelectionContainer {Text(value,style=MaterialTheme.typography.bodyLarge)} }
                     DockIconButton(onClick={
@@ -672,26 +694,28 @@ internal data class CardPhotoState(val bitmap:android.graphics.Bitmap?=null,val 
                 AnimatedVisibility(show,enter=expandVertically(DockMotion.settle(440f,.95f))+fadeIn(DockMotion.spec(130)),exit=shrinkVertically(DockMotion.spec(180))+fadeOut(DockMotion.spec(80))) {Text(listOf(card.rawText,card.backRawText).filter(String::isNotBlank).joinToString("\n\nBack of card\n"),style=MaterialTheme.typography.bodyMedium,color=MaterialTheme.colorScheme.onSurfaceVariant)}
             }
             Text("Saved ${CardLogic.date(card.createdAt)}",style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
+            CardHistoryAndNotes(card,vm)
+            ContactSharing(card,vm)
             DockTextButton(enabled=!busy,onClick={deleting=true},colors=ButtonDefaults.textButtonColors(contentColor=MaterialTheme.colorScheme.error)) {Icon(Icons.Outlined.DeleteOutline,null); Spacer(Modifier.width(8.dp)); Text("Delete card")}
         }
     }
     if(imageActions) ModalBottomSheet(onDismissRequest={imageActions=false}) {
         Column(Modifier.fillMaxWidth().padding(24.dp).dockModalArrival(),verticalArrangement=Arrangement.spacedBy(8.dp)) {
             Text("Card photos",style=MaterialTheme.typography.headlineMedium)
-            if(card.imagePath.isNotBlank()) ActionRow(Icons.Outlined.Crop,"Crop front","Adjust the saved front image",!busy) {imageActions=false;vm.recrop(card,false)}
-            if(card.backImagePath.isNotBlank()) ActionRow(Icons.Outlined.Crop,"Crop back","Adjust the saved back image",!busy) {imageActions=false;vm.recrop(card,true)}
-            ActionRow(Icons.Outlined.PhotoCamera,if(card.backImagePath.isBlank()) "Add back photo" else "Replace back photo","Take a photo of the other side",!busy) {imageActions=false;onCaptureSide(card,true)}
+            if(card.hasFrontImage) ActionRow(Icons.Outlined.Crop,"Crop front","Adjust the saved front image",!busy) {imageActions=false;vm.recrop(card,false)}
+            if(card.hasBackImage) ActionRow(Icons.Outlined.Crop,"Crop back","Adjust the saved back image",!busy) {imageActions=false;vm.recrop(card,true)}
+            ActionRow(Icons.Outlined.PhotoCamera,if(!card.hasBackImage) "Add back photo" else "Replace back photo","Take a photo of the other side",!busy) {imageActions=false;onCaptureSide(card,true)}
             ActionRow(Icons.Outlined.Image,"Import back photo","Choose the other side from your photos",!busy) {imageActions=false;importBack=true;sideGallery.launch("image/*")}
             ActionRow(Icons.Outlined.PhotoCamera,"Replace front photo","Your saved contact details will stay intact",!busy) {imageActions=false;onCaptureSide(card,false)}
             Spacer(Modifier.height(16.dp))
         }
     }
-    if(deleting) AlertDialog(modifier=Modifier.dockModalArrival(),onDismissRequest={deleting=false},title={Text("Delete ${card.displayLabel}?")},text={Text("The saved details, original image and preview will be deleted. This cannot be undone.",Modifier)},confirmButton={DockTextButton(onClick={deleting=false;vm.delete(card)}) {Text("Delete permanently")}},dismissButton={DockTextButton(onClick={deleting=false}) {Text("Keep card")}})
+    if(deleting) AlertDialog(modifier=Modifier.dockModalArrival(),onDismissRequest={deleting=false},title={Text("Remove ${card.displayLabel}?")},text={Text(if(BuildConfig.DEMO) "This removes the sample card from this demo session." else "Move this card to the recovery bin. You can restore it from Settings.",Modifier)},confirmButton={DockTextButton(onClick={deleting=false;vm.delete(card)}) {Text("Remove card")}},dismissButton={DockTextButton(onClick={deleting=false}) {Text("Keep card")}})
     if(contact) AlertDialog(modifier=Modifier.dockModalArrival(),onDismissRequest={contact=false},title={Text("Add to your phone contacts?")},text={Text("Your contacts app opens for review. Choose the destination account and check for an existing contact before saving. VisiDock does not read your phone contacts.",Modifier)},confirmButton={DockTextButton(onClick={
         contact=false
         val intent=Intent(Intent.ACTION_INSERT, ContactsContract.Contacts.CONTENT_URI).apply {
             putExtra(ContactsContract.Intents.Insert.NAME,card.name)
-            putExtra(ContactsContract.Intents.Insert.EMAIL,card.email); putExtra(ContactsContract.Intents.Insert.COMPANY,card.company)
+            putExtra(ContactsContract.Intents.Insert.COMPANY,card.company)
             putExtra(ContactsContract.Intents.Insert.JOB_TITLE,card.role); putExtra(ContactsContract.Intents.Insert.POSTAL,card.address)
             putExtra(ContactsContract.Intents.Insert.NOTES,card.notes)
             val data=arrayListOf<android.content.ContentValues>()
@@ -709,7 +733,8 @@ internal data class CardPhotoState(val bitmap:android.graphics.Bitmap?=null,val 
                 put(ContactsContract.CommonDataKinds.Phone.TYPE,type)
                 if(type==ContactsContract.CommonDataKinds.Phone.TYPE_CUSTOM) put(ContactsContract.CommonDataKinds.Phone.LABEL,phone.label)
             }) }
-            if(card.website.isNotBlank()) data.add(android.content.ContentValues().apply {put(ContactsContract.Data.MIMETYPE,ContactsContract.CommonDataKinds.Website.CONTENT_ITEM_TYPE);put(ContactsContract.CommonDataKinds.Website.URL,card.website)})
+            card.contactEmails.forEach {email->data.add(android.content.ContentValues().apply {put(ContactsContract.Data.MIMETYPE,ContactsContract.CommonDataKinds.Email.CONTENT_ITEM_TYPE);put(ContactsContract.CommonDataKinds.Email.ADDRESS,email)})}
+            card.contactWebsites.forEach {website->data.add(android.content.ContentValues().apply {put(ContactsContract.Data.MIMETYPE,ContactsContract.CommonDataKinds.Website.CONTENT_ITEM_TYPE);put(ContactsContract.CommonDataKinds.Website.URL,website)})}
             if(data.isNotEmpty()) putParcelableArrayListExtra(ContactsContract.Intents.Insert.DATA,data)
         }
         runCatching {context.startActivity(intent)}.onFailure {vm.report("No contacts app is available on this device.")}
@@ -728,11 +753,13 @@ internal data class CardPhotoState(val bitmap:android.graphics.Bitmap?=null,val 
     var requestedField by remember(card.id) {mutableStateOf<String?>(null)}
     val emailInvalid=card.email.isNotBlank() && ContactChannels.email(card.email)!=card.email.trim()
     val websiteInvalid=card.website.isNotBlank() && ContactChannels.website(card.website)!=card.website.trim()
-    val firstInvalid=if(emailInvalid) "Email" else if(websiteInvalid) "Website" else null
+    val invalidEmailIndex=editableChannels(card.email,card.emails).indexOfFirst {it.isNotBlank() && ContactChannels.email(it)!=it.trim()}
+    val invalidWebsiteIndex=editableChannels(card.website,card.websites).indexOfFirst {it.isNotBlank() && ContactChannels.website(it)!=it.trim()}
+    val firstInvalid=when {invalidEmailIndex>=0->"Email ${invalidEmailIndex+1}";invalidWebsiteIndex>=0->"Website ${invalidWebsiteIndex+1}";else->null}
     Column(Modifier.fillMaxSize().imePadding()) {
         TopAppBar(title={Text(if(existing) "Edit card" else "Review your card",maxLines=1,overflow=TextOverflow.Ellipsis)},navigationIcon={DockIconButton(enabled=!busy,onClick=onBack) {Icon(Icons.AutoMirrored.Outlined.ArrowBack,"Cancel editing")}},actions={
             // Keep the commit target stationary while Android animates the keyboard.
-            DockButton(loading=state.busy?.startsWith("Saving")==true,enabled=!busy && card.displayLabel.isNotBlank(),onClick={
+            DockButton(loading=state.busy?.startsWith("Saving")==true,enabled=!busy && !state.ownCardChoiceRequired && card.displayLabel.isNotBlank(),onClick={
                 validationShown=true
                 if(firstInvalid!=null) {requestedField=firstInvalid;focusAttempt++}
                 else {focus.clearFocus();keyboard?.hide();onSave(card)}
@@ -741,15 +768,26 @@ internal data class CardPhotoState(val bitmap:android.graphics.Bitmap?=null,val 
             }
         })
         Column(Modifier.weight(1f).widthIn(max=720.dp).fillMaxWidth().align(Alignment.CenterHorizontally).verticalScroll(rememberScrollState()).padding(horizontal=24.dp).dockReflow(),verticalArrangement=Arrangement.spacedBy(16.dp)) {
-            Text(if(existing) "Update card details" else "Check the extracted details",style=MaterialTheme.typography.titleLarge)
             if(!existing) Text("Check the details against the photo. Text recognition can make mistakes.",color=MaterialTheme.colorScheme.onSurfaceVariant)
+            if(state.ownCardChoiceRequired) Surface(color=MaterialTheme.colorScheme.secondaryContainer,shape=MaterialTheme.shapes.medium) {
+                Column(Modifier.padding(16.dp).dockReflow(),verticalArrangement=Arrangement.spacedBy(8.dp)) {
+                    Text("Which person is you?",style=MaterialTheme.typography.titleMedium)
+                    Text("This card contains several people. Choose your details for My card before saving. Each other person stays a separate contact.",style=MaterialTheme.typography.bodySmall)
+                    vm.ownCardCandidates().forEachIndexed {index,candidate->
+                        DockSelectionRow(label=candidate.displayLabel.ifBlank {"Person ${index+1}"},checked=false,
+                            onCheckedChange={if(it) vm.chooseOwnCard(candidate.id)},enabled=!busy,
+                            supportingText=listOf(candidate.role,candidate.company).filter(String::isNotBlank).joinToString(" \u00B7 "))
+                    }
+                }
+            }
             Photo(card,vm,state.draftPreview,state.draftBackPreview)
+            if(!busy && (state.draftPreview!=null || state.draftBackPreview!=null)) QrEvidenceReview(card,state.draftPreview,state.draftBackPreview,vm::changeDraft)
             if(!existing && state.draftPreview!=null && state.visualModelReady) DockTextButton(enabled=!busy,onClick=vm::readPhotosAgain) {Text("Read photos again")}
             if(state.remainingPeople>0) {
                 Text("${state.remainingPeople + 1} people to review · each saves as a separate contact",style=MaterialTheme.typography.titleMedium)
-                DockTextButton(enabled=!busy,onClick={focus.clearFocus();keyboard?.hide();vm.skipPerson()}) {Text("Skip person")}
+                DockTextButton(enabled=!busy && !state.ownCardChoiceRequired,onClick={focus.clearFocus();keyboard?.hide();vm.skipPerson()}) {Text("Skip person")}
             }
-            AnimatedContent(state.extractionWarnings,contentKey={it.isEmpty()},label="Extraction guidance",transitionSpec={
+            if(state.extractionWarnings.isNotEmpty()) AnimatedContent(state.extractionWarnings,contentKey={it.isEmpty()},label="Extraction guidance",transitionSpec={
                 (expandVertically(DockMotion.spec(200))+fadeIn(DockMotion.spec(140))) togetherWith (shrinkVertically(DockMotion.spec(160))+fadeOut(DockMotion.spec(90)))
             }) {warnings->if(warnings.isNotEmpty()) Surface(color=MaterialTheme.colorScheme.secondaryContainer,shape=MaterialTheme.shapes.medium) {
                 Column(Modifier.padding(16.dp),verticalArrangement=Arrangement.spacedBy(8.dp)) {
@@ -757,7 +795,7 @@ internal data class CardPhotoState(val bitmap:android.graphics.Bitmap?=null,val 
                     warnings.forEach { Text(it,style=MaterialTheme.typography.bodySmall) }
                 }
             }}
-            AnimatedContent(duplicate.map {it.name},contentKey={it.isEmpty()},label="Duplicate guidance",transitionSpec={
+            if(duplicate.isNotEmpty()) AnimatedContent(duplicate.map {it.name},contentKey={it.isEmpty()},label="Duplicate guidance",transitionSpec={
                 (expandVertically(DockMotion.spec(200))+fadeIn(DockMotion.spec(140))) togetherWith (shrinkVertically(DockMotion.spec(160))+fadeOut(DockMotion.spec(90)))
             }) {names->if(names.isNotEmpty()) Surface(color=MaterialTheme.colorScheme.secondaryContainer,shape=MaterialTheme.shapes.medium) {Text("Possible duplicate: ${names.joinToString()}. This email or phone is already in your collection.",Modifier.padding(16.dp))}}
             fun change(value: Card) {
@@ -778,22 +816,33 @@ internal data class CardPhotoState(val bitmap:android.graphics.Bitmap?=null,val 
                     transformOrigin=androidx.compose.ui.graphics.TransformOrigin(.5f,0f)
                     rotationX=(1f-unfold.value)*-14f;translationY=(1f-unfold.value)*-36.dp.toPx()
                     alpha=.35f+.65f*unfold.value;cameraDistance=18*density
-                }.focusRequester(request).bringIntoViewRequester(bring),enabled=!busy,label={Text(label)},singleLine=!multi,minLines=if(multi) 3 else 1,isError=issue!=null,supportingText={
+                }.focusRequester(request).bringIntoViewRequester(bring),enabled=!busy,label={Text(label)},singleLine=!multi,minLines=if(multi) 3 else 1,isError=issue!=null,supportingText=if(issue==null) null else {
+                    {
                     AnimatedVisibility(issue!=null,enter=expandVertically(DockMotion.spec(180))+fadeIn(DockMotion.spec(100)),exit=shrinkVertically(DockMotion.spec(140))+fadeOut(DockMotion.spec(70))) {Text(issue.orEmpty())}
+                    }
                 },keyboardOptions=KeyboardOptions(keyboardType=type,capitalization=if(type==KeyboardType.Text) KeyboardCapitalization.Sentences else KeyboardCapitalization.None))
             }
             SectionTitle(Icons.Outlined.Badge,"Identity")
-            Text("A person or company name is enough to keep this card.",style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
+            if(card.name.isBlank() && card.company.isBlank()) Text("Add a person or company name to save this card.",style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
             field("Full name",card.name,200) {change(card.copy(name=it))}
+            FieldEvidence(state,"name")
             field("Job title",card.role,300) {change(card.copy(role=it))}
+            FieldEvidence(state,"role")
             field("Company",card.company,300) {change(card.copy(company=it))}
+            FieldEvidence(state,"company")
             Spacer(Modifier.height(4.dp))
             SectionTitle(Icons.Outlined.ContactPhone,"Contact details")
             val editablePhones=card.phones.ifEmpty {card.contactPhones.ifEmpty {listOf(PhoneNumber(""))}}
             PhoneEditor(card.id,editablePhones,busy,validationShown) {values->change(card.copy(phones=values,phone=values.firstOrNull {it.number.isNotBlank()}?.number.orEmpty()))}
-            field("Email",card.email,300,KeyboardType.Email) {change(card.copy(email=it))}
-            field("Website",card.website,300,KeyboardType.Uri) {change(card.copy(website=it))}
+            ChannelEditor("Email",editableChannels(card.email,card.emails),busy,validationShown,focusAttempt,requestedField) {values->change(card.copy(emails=values,email=values.firstOrNull {it.isNotBlank()}.orEmpty()))}
+            FieldEvidence(state,"email")
+            RepeatedFieldEvidence(state,"emails")
+            ChannelEditor("Website",editableChannels(card.website,card.websites),busy,validationShown,focusAttempt,requestedField) {values->change(card.copy(websites=values,website=values.firstOrNull {it.isNotBlank()}.orEmpty()))}
+            FieldEvidence(state,"website")
+            RepeatedFieldEvidence(state,"websites")
             field("Address",card.address,1000,multi=true) {change(card.copy(address=it))}
+            FieldEvidence(state,"address")
+            CardOrganizationEditor(card,busy,::change)
             SectionTitle(Icons.Outlined.Notes,"Notes")
             field("Notes about this card",card.notes,4000,multi=true) {change(card.copy(notes=it))}
             if(card.rawText.isNotBlank()) {
@@ -806,7 +855,7 @@ internal data class CardPhotoState(val bitmap:android.graphics.Bitmap?=null,val 
     }
 }
 
-@Composable private fun SettingsScreen(state: VaultState,vm: VaultViewModel) {
+@Composable private fun SettingsScreen(state: VaultState,vm: VaultViewModel,onOwnCamera:()->Unit,onOwnImport:()->Unit,onImports:()->Unit) {
     val context=LocalContext.current
     var delete by rememberSaveable {mutableStateOf(false)}
     var learningHistory by rememberSaveable {mutableStateOf(false)}
@@ -829,6 +878,13 @@ internal data class CardPhotoState(val bitmap:android.graphics.Bitmap?=null,val 
             if(state.busy?.startsWith("Updating your profile")==true) {CircularProgressIndicator(Modifier.size(16.dp),strokeWidth=2.dp);Spacer(Modifier.width(8.dp))}
             Text(if(state.busy?.startsWith("Updating your profile")==true) "Saving name…" else "Save profile name")
         }
+        SettingsCompartment("My card & collection tools","Your own card, imports, organization, export and backup") {
+            CollectionTools(state,vm,onOwnCamera,onOwnImport)
+            DockOutlinedButton(onClick=onImports,enabled=!busy) {Text("Import images, PDF or QR contacts")}
+        }
+        SettingsCompartment("Security","App lock and screen privacy") {SecuritySettings()}
+        SettingsCompartment("Sync & recovery","${state.localVault.pendingCount} queued · ${state.localVault.deletedCards.size} removed · ${state.localVault.conflicts.size} conflicts") {RecoveryAndSync(state,vm)}
+        SettingsCompartment("Recognition controls","Card scripts and private diagnostics") {RecognitionSettings(vm::report)}
         if(BuildConfig.DEMO) Surface(color=MaterialTheme.colorScheme.primaryContainer,shape=MaterialTheme.shapes.medium) {Text("Demo workspace\nThese are fictional contacts. Changes are held in memory and reset when the app process restarts. Use sample images only.",Modifier.padding(20.dp),color=MaterialTheme.colorScheme.onPrimaryContainer)}
         if(!BuildConfig.DEMO && state.session?.verified==false) {
             Text("Verify your email",style=MaterialTheme.typography.titleMedium)
@@ -1035,7 +1091,7 @@ private class PhoneEditorRow(initial:PhoneNumber,initialOrdinal:Int,val enter:Bo
 @Composable private fun SavedCardReceipt(card:Card?,vm:VaultViewModel,name:String,event:Long) {
     val arrival=remember(event) {Animatable(if(android.animation.ValueAnimator.areAnimatorsEnabled()) 0f else 1f)}
     LaunchedEffect(event) {arrival.animateTo(1f,DockMotion.settle(440f,.82f))}
-    val photo=if(card!=null && card.imagePath.isNotBlank()) cardPhoto(card,vm).bitmap else null
+    val photo=if(card!=null && card.hasFrontImage) cardPhoto(card,vm).bitmap else null
     val accent=MaterialTheme.colorScheme.primary
     Box(Modifier.fillMaxWidth().statusBarsPadding().padding(16.dp),contentAlignment=Alignment.TopCenter) {
         Surface(color=MaterialTheme.colorScheme.primaryContainer,shape=MaterialTheme.shapes.large) {

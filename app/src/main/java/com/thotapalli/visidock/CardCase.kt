@@ -9,6 +9,8 @@ import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.PageSize
@@ -25,6 +27,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithCache
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -34,6 +37,7 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.asComposePath
 import androidx.compose.ui.graphics.drawscope.translate
+import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
@@ -47,6 +51,8 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlin.math.abs
+
+internal val CaseBrowsePosition=SemanticsPropertyKey<Float>("CaseBrowsePosition")
 
 private val CaseInk=Color(0xFF071D3D)
 private val CaseRim=Color(0xFF82BCE7)
@@ -108,6 +114,10 @@ private val CaseRim=Color(0xFF82BCE7)
         }
     }
     val current=cards[pager.settledPage.coerceIn(cards.indices)]
+    // Preview identity follows the dominant visible sheet. Commands still use
+    // the settled card and remain disabled until the physical gesture finishes.
+    val visiblePage=(if(pager.isScrollInProgress) pager.currentPage else pager.settledPage).coerceIn(cards.indices)
+    val displayedCard=cards[visiblePage]
     val actionable=!busy && !pager.isScrollInProgress && !reconciling
     Column(modifier.fillMaxWidth(),horizontalAlignment=Alignment.CenterHorizontally) {
         BoxWithConstraints(Modifier.fillMaxWidth().height(326.dp)) {
@@ -120,20 +130,33 @@ private val CaseRim=Color(0xFF82BCE7)
             // Foundation 1.7.6 includes trailing pageSpacing in max-scroll math.
             // Negative spacing therefore makes the last card unreachable. Keep
             // logical pages non-overlapping and overlap only their visual layers.
-            HorizontalPager(state=pager,pageSize=PageSize.Fixed(cardWidth),contentPadding=PaddingValues(horizontal=gutter),pageSpacing=0.dp,beyondViewportPageCount=1,key={cards[it].id},modifier=Modifier.fillMaxWidth().height(270.dp).semantics {contentDescription="Card case";stateDescription="${pager.currentPage+1} of ${cards.size}"}) {page->
+            HorizontalPager(state=pager,pageSize=PageSize.Fixed(cardWidth),contentPadding=PaddingValues(horizontal=gutter),pageSpacing=0.dp,beyondViewportPageCount=1,key={cards[it].id},modifier=Modifier.fillMaxWidth().height(270.dp).drawWithContent {
+                // Side walls contain the parked paper stack. Keep the upper edge
+                // open so an extracted card can rise without a horizontal cutoff.
+                clipRect(left=26.dp.toPx(),top=-size.height,right=size.width-26.dp.toPx(),bottom=size.height+48.dp.toPx()) {this@drawWithContent.drawContent()}
+            }.semantics {contentDescription="Card case";stateDescription="${pager.currentPage+1} of ${cards.size}";this[CaseBrowsePosition]=pager.currentPage+pager.currentPageOffsetFraction}) {page->
                 val card=cards[page]
                 val distance=(pager.currentPage-page)+pager.currentPageOffsetFraction
-                val proximity=1f-PhysicalMotion.cardDepth(distance)
-                Box(Modifier.zIndex(proximity).fillMaxWidth().padding(top=228.dp-cardHeight).graphicsLayer {
-                    // Parallel sheets travel through a shallow depth stack.
-                    translationX=distance*cardWidth.toPx()*.90f
-                    translationY=-(1f-proximity)*17.dp.toPx()
-                    scaleX=PhysicalMotion.cardScale(distance);scaleY=scaleX
+                val leaf=CaseBrowseGeometry.pose(distance,cardHeight.value)
+                val proximity=leaf.layer
+                val touch=remember(card.id) {MutableInteractionSource()}
+                val pressed by touch.collectIsPressedAsState()
+                val pressure by animateFloatAsState(if(pressed) 1f else 0f,
+                    if(pressed) DockMotion.spec(70) else DockMotion.settle(430f,.82f),label="Paper contact")
+                Box(Modifier.zIndex(proximity).fillMaxWidth().padding(top=CaseBrowseGeometry.CARD_BASELINE.dp-cardHeight).graphicsLayer {
+                    // The layer exchange happens behind the opaque leather pocket,
+                    // never while two large photograph faces overlap in open view.
+                    translationX=distance*cardWidth.toPx()+leaf.offsetX.dp.toPx()
+                    translationY=leaf.offsetY.dp.toPx()
+                    scaleX=leaf.scale*(1f-pressure*.006f);scaleY=scaleX
                 }.semantics(mergeDescendants=true) { if(page!=pager.currentPage) invisibleToUser() }
-                    .clickable(enabled=actionable,onClickLabel="Pull out ${card.displayLabel}") {if(page==pager.currentPage) onOpen(card) else browseTo(card.id)}) {
+                    .clickable(interactionSource=touch,indication=null,enabled=actionable,role=Role.Button,onClickLabel="Pull out ${card.displayLabel}") {if(page==pager.currentPage) onOpen(card) else browseTo(card.id)}) {
                     // The paper edge stays attached to its card as it moves through the case.
                     Box(Modifier.padding(top=4.dp).fillMaxWidth().height(cardHeight+2.dp).clip(RoundedCornerShape(12.dp)).background(Color(0xFFAABDCF)).materialGrain(alpha=.65f))
-                    Surface(Modifier.fillMaxWidth().height(cardHeight).physicalSurface(depthDp=3f+proximity*5f,shape=RoundedCornerShape(12.dp),material=PhysicalMaterial.Paper),shape=RoundedCornerShape(12.dp),color=Color(0xFFF0F5FA),tonalElevation=0.dp) {
+                    Surface(Modifier.fillMaxWidth().height(cardHeight).physicalSurface(depthDp=3f+proximity*5f,pressedFraction={pressure},shape=RoundedCornerShape(12.dp),material=PhysicalMaterial.Paper),shape=RoundedCornerShape(12.dp),color=Color(0xFFF0F5FA),tonalElevation=0.dp) {
+                        // The window changes at distance1.5; geometry has already
+                        // buried this leaf by1.3, so neither admission nor eviction
+                        // changes an exposed paper edge. Keep at most three images.
                         if(abs(page-pager.currentPage)<=1) image(card)
                     }
                     Canvas(Modifier.fillMaxWidth().height(cardHeight)) {
@@ -152,8 +175,8 @@ private val CaseRim=Color(0xFF82BCE7)
         }
         Row(Modifier.fillMaxWidth().padding(horizontal=24.dp),verticalAlignment=Alignment.CenterVertically) {
             DockIconButton(enabled=actionable && pager.settledPage>0,onClick={cards.getOrNull(pager.settledPage-1)?.let {browseTo(it.id)}}) {Icon(Icons.AutoMirrored.Outlined.ArrowBack,"Previous card")}
-            AnimatedContent(current.id,modifier=Modifier.weight(1f),label="Case label",transitionSpec={fadeIn(DockMotion.spec(150)) togetherWith fadeOut(DockMotion.spec(80))}) {id->
-                val item=cards.firstOrNull {it.id==id} ?: current
+            AnimatedContent(displayedCard.id,modifier=Modifier.weight(1f),label="Case label",transitionSpec={fadeIn(DockMotion.spec(150)) togetherWith fadeOut(DockMotion.spec(80))}) {id->
+                val item=cards.firstOrNull {it.id==id} ?: displayedCard
                 Column(horizontalAlignment=Alignment.CenterHorizontally,modifier=Modifier.fillMaxWidth()) {
                     Text(item.displayLabel,style=MaterialTheme.typography.titleLarge,maxLines=1,overflow=TextOverflow.Ellipsis)
                     Text(listOf(item.role,item.company).filter(String::isNotBlank).joinToString(" · "),style=MaterialTheme.typography.bodySmall,maxLines=1,overflow=TextOverflow.Ellipsis,color=MaterialTheme.colorScheme.onSurfaceVariant)
@@ -163,9 +186,9 @@ private val CaseRim=Color(0xFF82BCE7)
         }
         FlowRow(Modifier.fillMaxWidth().padding(horizontal=16.dp,vertical=8.dp),horizontalArrangement=Arrangement.spacedBy(8.dp,Alignment.CenterHorizontally),verticalArrangement=Arrangement.spacedBy(4.dp)) {
             DockOutlinedButton(enabled=actionable,onClick={onOpen(current)}) {Icon(Icons.Outlined.OpenInFull,null,Modifier.size(16.dp));Spacer(Modifier.width(8.dp));Text("Open card")}
-            DockFilterChip(selected=current.favorite,onClick={onFavorite(current)},enabled=actionable,label={Text(if(current.favorite) "Favorited" else "Favorite")})
+            DockFilterChip(selected=displayedCard.favorite,onClick={onFavorite(current)},enabled=actionable,label={Text(if(displayedCard.favorite) "Favorited" else "Favorite")})
         }
-        Text("${pager.settledPage+1} / ${cards.size}",Modifier.padding(bottom=16.dp),style=MaterialTheme.typography.labelSmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
+        Text("${visiblePage+1} / ${cards.size}",Modifier.padding(bottom=16.dp),style=MaterialTheme.typography.labelSmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
 
@@ -215,10 +238,13 @@ private val CaseRim=Color(0xFF82BCE7)
         val y=(size.height-paint.fontMetrics.ascent-paint.fontMetrics.descent)/2
         val glyphs=android.graphics.Path().apply {paint.getTextPath(visibleLabel,0,visibleLabel.length,x,y,this)}.asComposePath()
         onDrawBehind {
-            translate(left=.45f.dp.toPx(),top=.85f.dp.toPx()) {drawPath(glyphs,Color(0xFF7BADC6).copy(alpha=.48f))}
-            translate(left=-.3f.dp.toPx(),top=-.65f.dp.toPx()) {drawPath(glyphs,Color(0xFF03162E).copy(alpha=.92f))}
-            drawPath(glyphs,Color(0xFF183B5C))
-            drawPath(glyphs,SurfaceTextures.shell,alpha=.55f)
+            // Pressed leather loses its raised grain under the die. Narrow cavity
+            // edges share the shell's upper-left light, rather than outlining ink.
+            translate(left=.25f.dp.toPx(),top=.45f.dp.toPx()) {drawPath(glyphs,Color(0xFF7898AA).copy(alpha=.30f))}
+            translate(left=-.18f.dp.toPx(),top=-.35f.dp.toPx()) {drawPath(glyphs,Color(0xFF0B223B).copy(alpha=.68f))}
+            drawPath(glyphs,Brush.linearGradient(listOf(Color(0xFF173650),Color(0xFF24455E)),start=Offset(x,y-12.sp.toPx()),end=Offset(x+size.width*.35f,y+3.sp.toPx())))
+            // A compressed micro-pore finish remains, without the surrounding pebble relief.
+            drawPath(glyphs,SurfaceTextures.paper,alpha=.14f)
         }
     })
 }

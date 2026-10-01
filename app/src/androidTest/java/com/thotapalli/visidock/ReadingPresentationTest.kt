@@ -8,6 +8,9 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
 import androidx.compose.material3.Text
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.*
@@ -60,12 +63,16 @@ class ReadingPresentationTest {
     @Test fun alreadyCompletedBackendStillPresentsFrontThenBackThenReviewHandoff() {
         val f=fixture()
         var presentations=0
+        var background=0
+        var density=1f
         val regions=listOf(OcrRegion("Mira Sen",.1f,.15f,.7f,.25f,0),
             OcrRegion("mira@example.com",.1f,.4f,.8f,.5f,1),
             OcrRegion("12 Lake Road",.1f,.6f,.8f,.7f,1))
         compose.mainClock.autoAdvance=false
         try {
             compose.runOnUiThread {compose.activity.setContent {VisiDockTheme {
+                background=MaterialTheme.colorScheme.background.toArgb()
+                density=LocalDensity.current.density
                 ReadingStage(f.card,f.vm,f.front.path,f.back.path,2,"Fixture reading",true,
                     regions=regions,analysisReady=true,onPresented={presentations++},onCancel={})
             }}}
@@ -98,6 +105,17 @@ class ReadingPresentationTest {
             assertEquals("Presentation completes after the review handoff, not when the beam finishes",0,presentations)
             compose.mainClock.advanceTimeBy(400)
             compose.onNodeWithText("Check the details, then save").assertExists()
+            compose.onNodeWithText("Ready to review").assertExists()
+            compose.onNodeWithText("Organizing details from both sides").assertDoesNotExist()
+            compose.onNodeWithText("Fixture reading").assertDoesNotExist()
+            val photoBounds=compose.onNodeWithContentDescription("Back of card being read").fetchSemanticsNode().boundsInRoot
+            val handoff=compose.onRoot().captureToImage().asAndroidBitmap()
+            try {
+                val shadow=handoff.getPixel(photoBounds.center.x.toInt(),(photoBounds.bottom+8*density).toInt())
+                if(android.graphics.Color.red(background)>150)
+                    assertTrue("Lifted photo must reveal filled soft shadow, not a hollow pale card",android.graphics.Color.red(shadow)<android.graphics.Color.red(background)-12)
+                else assertTrue("Projected shadow must darken the supporting plane",android.graphics.Color.blue(shadow)<android.graphics.Color.blue(background)-2)
+            } finally {handoff.recycle()}
             frame("reading-review-handoff")
             assertEquals(0,presentations)
             compose.mainClock.advanceTimeBy(600)

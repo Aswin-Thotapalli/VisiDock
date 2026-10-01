@@ -22,10 +22,12 @@ class CaptureSessionTest {
         assumeTrue(BuildConfig.DEMO)
         val app=InstrumentationRegistry.getInstrumentation().targetContext.applicationContext as Application
         val store=ViewModelStore()
+        val drafts=DraftStore(app)
+        drafts.clear(DemoRepository().session().uid)
         val input=File(app.cacheDir,"new-card-back.jpg")
         try {
             val vm=withContext(Dispatchers.Main) {VaultViewModel(app,SavedStateHandle()).also {store.put("edit-sides",it)}}
-            val state=withTimeout(10000) {vm.state.first {!it.loading && it.cards.isNotEmpty()}}
+            val state=withTimeout(10000) {vm.state.first {!it.loading && it.busy==null && it.cards.isNotEmpty()}}
             val card=state.cards.first {it.imagePath.isNotBlank() && it.backImagePath.isBlank()}
             val originalFront=vm.photo(card)
             input.writeBytes(DemoCardImages.preview(card,true))
@@ -49,7 +51,49 @@ class CaptureSessionTest {
             assertEquals(card.name,recropped.name);assertArrayEquals(originalFront,vm.photo(recropped))
             val bitmap=android.graphics.BitmapFactory.decodeByteArray(vm.photo(recropped,true)!!,0,vm.photo(recropped,true)!!.size)
             try {assertEquals(800,bitmap.width);assertEquals(480,bitmap.height)} finally {bitmap.recycle()}
-        } finally {withContext(Dispatchers.Main) {store.clear()};input.delete()}
+        } finally {withContext(Dispatchers.Main) {store.clear()};drafts.clear(DemoRepository().session().uid);input.delete()}
+    }
+    @Test fun jointOwnCardRequiresChoiceAcrossRestartAndSavesOnlyChosenPersonAsMine()=runBlocking {
+        assumeTrue(BuildConfig.DEMO)
+        val app=InstrumentationRegistry.getInstrumentation().targetContext.applicationContext as Application
+        val drafts=DraftStore(app);drafts.clear(DemoRepository().session().uid)
+        val stores=List(3) {ViewModelStore()}
+        fun encoded(card:Card)=org.json.JSONObject(card.record()+mapOf("id" to card.id))
+        val first=Card(id="joint-first",name="Dev Shah")
+        val second=Card(id="joint-owner",name="Mira Sen")
+        var handle=SavedStateHandle(mapOf("draftOwner" to "demo","draft" to encoded(first).toString(),
+            "pendingPeople" to org.json.JSONArray().put(encoded(second)).toString(),"ownCardChoiceRequired" to true))
+        try {
+            var vm=withContext(Dispatchers.Main) {VaultViewModel(app,handle).also {stores[0].put("own",it)}}
+            withTimeout(10000) {vm.state.first {!it.loading && it.busy==null}}
+            assertTrue(vm.state.value.ownCardChoiceRequired);assertTrue(vm.ownCardCandidates().none {it.isOwnCard})
+            withContext(Dispatchers.Main) {vm.save()}
+            withTimeout(10000) {vm.state.first {it.busy==null && it.error!=null}}
+            assertTrue(vm.state.value.cards.none {it.id==first.id || it.id==second.id})
+            withContext(Dispatchers.Main) {
+                handle=SavedStateHandle(handle.keys().associateWith {handle.get<Any?>(it)})
+                stores[0].clear();vm=VaultViewModel(app,handle).also {stores[1].put("own",it)}
+            }
+            withTimeout(10000) {vm.state.first {!it.loading && it.busy==null}}
+            assertTrue(vm.state.value.ownCardChoiceRequired);assertTrue(vm.ownCardCandidates().none {it.isOwnCard})
+            withContext(Dispatchers.Main) {vm.chooseOwnCard(second.id)}
+            assertFalse(vm.state.value.ownCardChoiceRequired)
+            assertEquals(listOf(second.id),vm.ownCardCandidates().filter {it.isOwnCard}.map {it.id})
+            withContext(Dispatchers.Main) {
+                handle=SavedStateHandle(handle.keys().associateWith {handle.get<Any?>(it)})
+                stores[1].clear();vm=VaultViewModel(app,handle).also {stores[2].put("own",it)}
+            }
+            withTimeout(10000) {vm.state.first {!it.loading && it.busy==null}}
+            assertFalse(vm.state.value.ownCardChoiceRequired)
+            assertEquals(listOf(second.id),vm.ownCardCandidates().filter {it.isOwnCard}.map {it.id})
+            withContext(Dispatchers.Main) {vm.save()}
+            withTimeout(10000) {vm.state.first {it.busy==null && it.draft?.id==second.id}}
+            assertTrue(vm.state.value.draft!!.isOwnCard)
+            assertFalse(vm.state.value.cards.single {it.id==first.id}.isOwnCard)
+            withContext(Dispatchers.Main) {vm.save()}
+            withTimeout(10000) {vm.state.first {it.busy==null && it.draft==null}}
+            assertTrue(vm.state.value.cards.single {it.id==second.id}.isOwnCard)
+        } finally {withContext(Dispatchers.Main) {stores.forEach {it.clear()}};drafts.clear(DemoRepository().session().uid)}
     }
     @Test fun bothCropsArePreparedBeforeAnyExtractionAndSurviveRestore()=runBlocking {
         assumeTrue(BuildConfig.DEMO)
@@ -60,8 +104,12 @@ class CaptureSessionTest {
         gallery.outputStream().use {bitmap.compress(Bitmap.CompressFormat.JPEG,90,it)};bitmap.recycle()
         val handle=SavedStateHandle()
         val store=ViewModelStore();val restoredStore=ViewModelStore()
+        val drafts=DraftStore(app)
+        drafts.clear(DemoRepository().session().uid)
         try {
-            val vm=withContext(Dispatchers.Main) {VaultViewModel(app,handle).also {store.put("session",it);it.beginCapture()}}
+            val vm=withContext(Dispatchers.Main) {VaultViewModel(app,handle).also {store.put("session",it)}}
+            withTimeout(10000) {vm.state.first {!it.loading && it.busy==null}}
+            withContext(Dispatchers.Main) {vm.beginCapture()}
             val id=vm.state.value.draft!!.id
             for(back in listOf(false,true)) {
                 withContext(Dispatchers.Main) {vm.stageCrop(Uri.fromFile(gallery),back)}
@@ -82,6 +130,7 @@ class CaptureSessionTest {
                 store.clear()
                 VaultViewModel(app,SavedStateHandle(snapshot)).also {restoredStore.put("session",it)}
             }
+            withTimeout(10000) {restored.state.first {!it.loading && it.busy==null}}
             assertTrue(restored.state.value.captureReview)
             assertEquals(front.path,restored.state.value.draftPreview)
             assertEquals(back.path,restored.state.value.draftBackPreview)
@@ -92,6 +141,6 @@ class CaptureSessionTest {
             assertTrue(restored.state.value.draft!!.sourceScanId.isNotBlank())
             withContext(Dispatchers.Main) {restored.cancelCapture()}
             assertFalse(front.exists());assertFalse(back.exists());assertTrue(gallery.exists())
-        } finally {withContext(Dispatchers.Main) {store.clear();restoredStore.clear()};gallery.delete()}
+        } finally {withContext(Dispatchers.Main) {store.clear();restoredStore.clear()};drafts.clear(DemoRepository().session().uid);gallery.delete()}
     }
 }

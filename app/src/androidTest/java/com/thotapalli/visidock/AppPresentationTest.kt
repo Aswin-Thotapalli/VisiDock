@@ -89,7 +89,8 @@ class AppPresentationTest {
         screenshot("phone-settings")
         compose.onNode(hasText("Collection") and hasClickAction()).performClick()
         compose.runOnIdle {vm.edit(card)}
-        compose.waitUntil(10000) {compose.onAllNodesWithText("Update card details").fetchSemanticsNodes().isNotEmpty()}
+        compose.waitUntil(10000) {compose.onAllNodesWithText("Edit card").fetchSemanticsNodes().isNotEmpty()}
+        compose.onNodeWithText("Full name").assertIsDisplayed()
         screenshot("phone-editor")
         compose.runOnIdle {vm.discard();vm.beginCapture()}
         val source=File(compose.activity.cacheDir,"presentation-source.jpg").apply {writeBytes(DemoCardImages.preview(card))}

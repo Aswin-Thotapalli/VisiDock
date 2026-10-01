@@ -1,0 +1,15 @@
+{
+  "suite": 2,
+  "description": "Fictional fixture coverage; not a population-level accuracy benchmark.",
+  "unitClasses": ["VisualExtractionTest", "SourceAssignmentsTest", "OcrEvidenceTest", "ContactChannelsTest", "RecognitionQualityTest", "PersonalClassifierTest", "RepeatedChannelLearningTest"],
+  "nativeTests": ["SmallPrintEvidenceTest.smallFooterPunctuationAndAddressRetainSourceCoordinates"],
+  "modelFixtures": {
+    "single": ["name", "role", "company", "phone", "email", "website", "full address"],
+    "two_columns": ["two people", "phone ownership", "email ownership"],
+    "two_sides": ["front identity", "back contact data", "complete address"],
+    "three_phones_postal": ["three labelled numbers", "multiline postal address", "role versus name"],
+    "multiple_channels": ["two emails", "two websites", "three labelled numbers", "postal block"]
+  },
+  "scanTargetMillis": 15000,
+  "limitations": ["Synthetic typography only", "No claim of universal layouts or low-light performance", "Mixed-script native accuracy still needs dedicated device fixtures", "No JVM result substitutes for actual on-device model execution"]
+}

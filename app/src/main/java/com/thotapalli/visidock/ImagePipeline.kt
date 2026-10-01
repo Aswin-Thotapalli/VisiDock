@@ -13,6 +13,11 @@ import androidx.exifinterface.media.ExifInterface
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
+import com.google.mlkit.vision.text.chinese.ChineseTextRecognizerOptions
+import com.google.mlkit.vision.text.devanagari.DevanagariTextRecognizerOptions
+import com.google.mlkit.vision.text.japanese.JapaneseTextRecognizerOptions
+import com.google.mlkit.vision.text.korean.KoreanTextRecognizerOptions
+import com.google.mlkit.vision.text.TextRecognizer
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.currentCoroutineContext
@@ -36,6 +41,7 @@ object ImagePipeline {
 
     /** Stage both photographs before paying the OCR/model cost. The caller owns returned files. */
     suspend fun prepare(context: Context, uri: Uri): ScanFiles = withContext(Dispatchers.IO) {
+        val stageStarted = SystemClock.elapsedRealtime()
         val key = UUID.randomUUID().toString()
         val original = File(directory(context), "$key.original")
         val preview = File(directory(context), "$key.jpg")
@@ -82,6 +88,8 @@ object ImagePipeline {
             complete = true
             ScanFiles(original, preview, bounds.outMimeType, "")
         } finally {
+            RecognitionDiagnostics.record(context, RecognitionTiming(RecognitionStage.Prepare,
+                SystemClock.elapsedRealtime()-stageStarted, complete))
             ownedBitmaps.forEach { if (!it.isRecycled) it.recycle() }
             if (!complete) { original.delete(); preview.delete() }
         }
@@ -89,6 +97,15 @@ object ImagePipeline {
 
     /** OCR the detailed source, not the smaller display JPEG: punctuation needs those pixels. */
     suspend fun read(context: Context, files: ScanFiles): ScanFiles = withContext(Dispatchers.IO) {
+        val decodeStarted = SystemClock.elapsedRealtime()
+        val manager = context.getSystemService(Context.ACTIVITY_SERVICE) as android.app.ActivityManager
+        val memory = android.app.ActivityManager.MemoryInfo().also(manager::getMemoryInfo)
+        val power = context.getSystemService(Context.POWER_SERVICE) as android.os.PowerManager
+        val battery = context.getSystemService(Context.BATTERY_SERVICE) as android.os.BatteryManager
+        val batteryLevel = battery.getIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_CAPACITY)
+        val quality = RecognitionQuality.budget(OcrDeviceBudget(memory.availMem, memory.lowMemory,
+            batteryLow = batteryLevel in 1..15,
+            thermalStatus = if (android.os.Build.VERSION.SDK_INT >= 29) power.currentThermalStatus else 0))
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         BitmapFactory.decodeFile(files.original.path, bounds)
         require(bounds.outWidth > 0 && bounds.outHeight > 0) { "This card photograph is no longer available. Retake this side." }
@@ -101,7 +118,7 @@ object ImagePipeline {
             // Decoder scaling avoids holding both a 4800px intermediate and a
             // separate resized bitmap in an app that also runs a local model.
             inDensity = maxOf(bounds.outWidth, bounds.outHeight) / sample
-            inTargetDensity = minOf(inDensity, 2400)
+            inTargetDensity = minOf(inDensity, quality.baseEdge)
             inScaled = inTargetDensity < inDensity
         })
             ?: error("Could not read this card photograph.")
@@ -113,11 +130,13 @@ object ImagePipeline {
                 postRotate((exif?.rotationDegrees ?: 0).toFloat())
             }
             bitmap = Bitmap.createBitmap(decoded, 0, 0, decoded.width, decoded.height, matrix, true)
+            RecognitionDiagnostics.record(context, RecognitionTiming(RecognitionStage.Decode,
+                SystemClock.elapsedRealtime()-decodeStarted, true, bitmap.width, bitmap.height))
             currentCoroutineContext().ensureActive()
-            val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
+            val recognizer = recognizer(RecognitionPreferences.effectiveScript(context))
             try {
                 // Native recognition must finish before its bitmap can safely be released.
-                val recognized = withContext(NonCancellable) { recognizer.process(InputImage.fromBitmap(bitmap, 0)).await() }
+                val recognized = recognize(context, recognizer, bitmap, RecognitionStage.OcrFull)
                 currentCoroutineContext().ensureActive()
                 fun observations(text: com.google.mlkit.vision.text.Text, w: Int, h: Int, area: OcrRegion?, pass: String) =
                     text.textBlocks.flatMap { it.lines }.mapNotNull { line -> line.boundingBox?.let { box ->
@@ -127,21 +146,23 @@ object ImagePipeline {
                             top+box.top.toFloat()/h*height, left+box.right.toFloat()/w*width,
                             top+box.bottom.toFloat()/h*height), line.confidence.takeIf { it.isFinite() && it > 0f && it <= 1f }, pass)
                     } }
-                var evidence = OcrEvidence(observations(recognized, bitmap.width, bitmap.height, null, "full"))
-                val plan = OcrDetailPlanner.plan(evidence.lines, bitmap.width, bitmap.height)
+                var evidence = OcrEvidence(observations(recognized, bitmap.width, bitmap.height, null, "full"),
+                    qualityWarnings = if (quality.baseEdge < 2400) listOf("Available device memory limited this read. Check small text, or retry after closing other apps.") else emptyList())
+                val plan = OcrDetailPlanner.plan(evidence.lines, bitmap.width, bitmap.height).take(quality.detailPasses)
                 // This is an admission budget, not a native-task timeout. Never recycle a bitmap
                 // while ML Kit owns it. Good scans do not enter this loop.
                 val started = SystemClock.elapsedRealtime()
                 var pixels = 0L
                 for (region in plan) {
                     currentCoroutineContext().ensureActive()
-                    if (SystemClock.elapsedRealtime()-started > 1800 || pixels >= 3_000_000L) break
+                    if (SystemClock.elapsedRealtime()-started > quality.admissionMillis || pixels >= quality.detailPixels) break
                     val detail = decodeDetail(files.original, bounds.outWidth, bounds.outHeight, matrix, region) ?: continue
                     try {
-                        if (pixels + detail.bitmap.width.toLong()*detail.bitmap.height > 3_000_000L) continue
+                        if (pixels + detail.bitmap.width.toLong()*detail.bitmap.height > quality.detailPixels ||
+                            !RecognitionQuality.addsDetail(bitmap.width, bitmap.height, detail.bitmap.width, detail.bitmap.height, detail.area)) continue
                         pixels += detail.bitmap.width.toLong()*detail.bitmap.height
                         val reading = try {
-                            withContext(NonCancellable) { recognizer.process(InputImage.fromBitmap(detail.bitmap, 0)).await() }
+                            recognize(context, recognizer, detail.bitmap, RecognitionStage.OcrDetail)
                         } catch (_: Exception) {
                             currentCoroutineContext().ensureActive()
                             continue // Optional detail OCR must not discard the complete successful first pass.
@@ -157,6 +178,30 @@ object ImagePipeline {
         } finally {
             if (bitmap !== decoded) bitmap.recycle()
             decoded.recycle()
+        }
+    }
+
+    private fun recognizer(script: OcrScript): TextRecognizer = when (script) {
+        OcrScript.Chinese -> TextRecognition.getClient(ChineseTextRecognizerOptions.Builder().build())
+        OcrScript.Devanagari -> TextRecognition.getClient(DevanagariTextRecognizerOptions.Builder().build())
+        OcrScript.Japanese -> TextRecognition.getClient(JapaneseTextRecognizerOptions.Builder().build())
+        OcrScript.Korean -> TextRecognition.getClient(KoreanTextRecognizerOptions.Builder().build())
+        else -> TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
+    }
+
+    private suspend fun recognize(context: Context, recognizer: TextRecognizer, bitmap: Bitmap,
+        stage: RecognitionStage): com.google.mlkit.vision.text.Text {
+        val started = SystemClock.elapsedRealtime()
+        var success = false
+        var regions = 0
+        try {
+            val result = withContext(NonCancellable) { recognizer.process(InputImage.fromBitmap(bitmap, 0)).await() }
+            success = true
+            regions = result.textBlocks.sumOf { it.lines.size }
+            return result
+        } finally {
+            RecognitionDiagnostics.record(context, RecognitionTiming(stage, SystemClock.elapsedRealtime()-started,
+                success, bitmap.width, bitmap.height, regions))
         }
     }
 

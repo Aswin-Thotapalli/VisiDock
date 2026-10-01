@@ -77,7 +77,11 @@ class PersonalLearning(private val context:Context,private val uid:String) {
             val data=read();val existing=examples(data)
             val removed=existing.any {it.cardId==after.id && it.field in changed}
             val merged=(existing.filterNot {it.cardId==after.id && it.field in changed}+additions).takeLast(280)
-            if(removed) {data.remove("weights");data.remove("trainedAt")}
+            val contradicted = data.has("weights") && PersonalClassifier.contradicted(weights(data), additions)
+            if(removed || contradicted) {
+                data.remove("weights");data.remove("trainedAt")
+                if (contradicted) data.put("lastRollbackAt", System.currentTimeMillis())
+            }
             data.put("examples",encode(merged));write(data)
             schedule()
         }
@@ -94,8 +98,9 @@ class PersonalLearning(private val context:Context,private val uid:String) {
     }
     fun trainIfEligible(shouldContinue:()->Boolean = {true}) {
         val snapshot=snapshot()?:return
-        val (training,validation)=PersonalClassifier.split(snapshot.examples)
-        if(validation.isEmpty() || training.map {it.field}.distinct().size<2) return
+        val (training,validation)=PersonalClassifier.split(PersonalClassifier.unambiguous(snapshot.examples))
+        if(validation.map { it.group }.distinct().size < 2 || training.map { it.group }.distinct().size < 4 ||
+            training.map {it.field}.distinct().size<2 || validation.map {it.field}.distinct().size<2) return
         val candidate=PersonalClassifier.train(training,shouldContinue=shouldContinue)
         if(!PersonalClassifier.acceptable(snapshot.weights,candidate,validation)) return
         synchronized(lock) {

@@ -22,7 +22,9 @@ import kotlinx.coroutines.delay
 class VisualReadingUnavailableException(message:String,cause:Throwable?=null):IllegalStateException(message,cause)
 
 /** Pinned, checksum-verified public model. Photographs never leave this runtime. */
-class VisualModel(private val context: Context) {
+class VisualModel(private val context: Context, private val gpuLanguage:Boolean=false,
+    private val speculativeDecoding:Boolean=false,
+    private val evaluationObserver:((String,VisualProposal)->Unit)?=null) {
     private val runtimeScope=CoroutineScope(SupervisorJob()+Dispatchers.Default)
     private var warmEngine:Engine?=null
     private var warmCpuVision:Boolean?=null
@@ -96,8 +98,11 @@ class VisualModel(private val context: Context) {
     }
 
     suspend fun extract(front: File, back: File?, frontText: String, backText: String, localHints: String = "", ocrEvidence: OcrEvidence = OcrEvidence()): VisualProposal = withContext(Dispatchers.Default) {
+        val timingStarted = android.os.SystemClock.elapsedRealtime()
+        var succeeded = false
+        try {
         // The runtime's visual budget is global; serialize engines as well as its configuration.
-        extractionMutex.withLock {
+        val result = extractionMutex.withLock {
         requireSupportedDevice()
         check(installed()) { "Download visual reading in Settings first." }
         require(front.isFile && (back == null || back.isFile)) { "The card photograph is no longer available." }
@@ -110,11 +115,18 @@ class VisualModel(private val context: Context) {
         try { infer(front,back,frontText,backText,localHints,false,ocrEvidence) }
         catch(e: LiteRtLmJniException) {
             currentCoroutineContext().ensureActive()
+            if(!VisualRuntimePolicy.canRetryVisionOnCpu(e.message.orEmpty())) throw e
             // Some devices cannot compile this encoder for their GPU. Retry locally on CPU.
             val result=infer(front,back,frontText,backText,localHints,true,ocrEvidence)
             preferences.edit().putBoolean(cpuKey,true).apply()
             result
         }
+        }
+        succeeded = true
+        result
+        } finally {
+            RecognitionDiagnostics.record(context, RecognitionTiming(RecognitionStage.VisualModel,
+                android.os.SystemClock.elapsedRealtime()-timingStarted, succeeded))
         }
     }
 
@@ -140,17 +152,18 @@ class VisualModel(private val context: Context) {
         val started=android.os.SystemClock.elapsedRealtime()
         fun stage(name:String) {
             if(BuildConfig.DEBUG) android.util.Log.d("VisiDockVisualRuntime",
-                "vision=${if(cpuVision) "cpu" else "gpu"} stage=$name elapsedMs=${android.os.SystemClock.elapsedRealtime()-started}")
+                "language=${if(gpuLanguage) "gpu" else "cpu"} vision=${if(cpuVision) "cpu" else "gpu"} stage=$name elapsedMs=${android.os.SystemClock.elapsedRealtime()-started}")
         }
         stage("initializing")
         val reused=warmEngine!=null
         val engine = warmEngine ?: try {
             // This must precede Engine construction to also bound encoder allocation/signatures.
             ExperimentalFlags.visualTokenBudget=280
+            ExperimentalFlags.enableSpeculativeDecoding=gpuLanguage && speculativeDecoding
             Engine.setNativeMinLogSeverity(LogSeverity.ERROR)
-            Engine(EngineConfig(modelPath = model.path, backend = Backend.CPU(),
+            Engine(EngineConfig(modelPath = model.path, backend = if(gpuLanguage) Backend.GPU() else Backend.CPU(),
                 visionBackend = if(cpuVision) Backend.CPU() else Backend.GPU(), maxNumTokens = 4096, maxNumImages = imageCount,
-                cacheDir = File(context.cacheDir,if(cpuVision) "vision-cpu" else "vision-gpu").apply {mkdirs()}.path))
+                cacheDir = File(context.cacheDir,"language-${if(gpuLanguage) "gpu" else "cpu"}-vision-${if(cpuVision) "cpu" else "gpu"}").apply {mkdirs()}.path))
         } catch(e: LinkageError) {
             throw VisualReadingUnavailableException("Visual reading is unavailable in this device's native runtime. You can still review text suggestions.",e)
         }
@@ -165,38 +178,58 @@ class VisualModel(private val context: Context) {
             currentCoroutineContext().ensureActive()
             engine.createConversation(ConversationConfig(systemInstruction = Contents.of(VisualExtraction.instruction),
                 samplerConfig = SamplerConfig(topK = 1, topP = 1.0, temperature = 0.0),
-                maxOutputToken = 1200, thinkingConfig = ThinkingConfig(enableThinking = false))).use { conversation ->
+                maxOutputToken = 1400, thinkingConfig = ThinkingConfig(enableThinking = false),enableResponseFormat=true)).use { conversation ->
                 val contents = mutableListOf<Content>(Content.Text("Front of card:"), Content.ImageFile(front.path))
                 back?.let { contents += Content.Text("Back of the SAME card:"); contents += Content.ImageFile(it.path) }
-                val frontBudget=if(back==null) 2000 else 1000
-                val boundedFront=VisualExtraction.boundedOcr(frontText,frontBudget)
-                val boundedBack=if(back==null) "" else VisualExtraction.boundedOcr(backText,1000)
-                contents += Content.Text("OCR evidence (may contain errors):\nFRONT:\n$boundedFront\nBACK:\n$boundedBack")
-                ocrEvidence.modelContext().takeIf(String::isNotBlank)?.let { contents += Content.Text(it) }
+                contents += Content.Text(VisualPromptEvidence.build(frontText,backText,ocrEvidence).text)
                 if(localHints.isNotBlank()) contents += Content.Text(localHints.take(600))
-                val result = StringBuilder()
-                var completeJson:String?=null
-                var firstResponse=true
-                try {
-                    conversation.sendMessageAsync(Contents.of(contents)).takeWhile { chunk ->
-                        currentCoroutineContext().ensureActive()
-                        if(firstResponse) {stage("first_response");firstResponse=false}
-                        result.append(chunk.contents.contents.filterIsInstance<Content.Text>().joinToString("") { it.text })
-                        check(result.length <= 32_000) { "The visual result was too long." }
-                        completeJson=VisualExtraction.completedJson(result.toString())
-                        completeJson==null
-                    }.collect {}
-                } finally {
-                    // Closing the SDK flow alone does not cancel native generation (its awaitClose is empty).
-                    // Cleanup failure must not replace coroutine cancellation or the original inference error.
-                    runCatching { conversation.cancelProcess() }
+                suspend fun read(message: Contents): VisualProposal {
+                    val result = StringBuilder()
+                    var completeJson:String?=null
+                    var firstResponse=true
+                    try {
+                        conversation.sendMessageAsync(message,responseFormat=ResponseFormat.json(VisualSchema.json)).takeWhile { chunk ->
+                            currentCoroutineContext().ensureActive()
+                            if(firstResponse) {stage("first_response");firstResponse=false}
+                            result.append(chunk.contents.contents.filterIsInstance<Content.Text>().joinToString("") { it.text })
+                            check(result.length <= 32_000) { "The visual result was too long." }
+                            completeJson=VisualExtraction.completedJson(result.toString())
+                            completeJson==null
+                        }.collect {}
+                    } finally {
+                        // The SDK flow's awaitClose does not stop native generation.
+                        stage("cancel_requested")
+                        runCatching { conversation.cancelProcess() }
+                        stage("cancel_returned")
+                    }
+                    currentCoroutineContext().ensureActive()
+                    return VisualExtraction.parse(completeJson ?: result.toString(), frontText, backText, ocrEvidence)
                 }
-                currentCoroutineContext().ensureActive()
+                val first = read(Contents.of(contents))
+                if(BuildConfig.DEMO) evaluationObserver?.invoke("initial",first)
                 stage("json_complete")
-                VisualExtraction.parse(completeJson ?: result.toString(), frontText, backText, ocrEvidence)
+                val repairPrompt = SourceAssignments.repairPrompt(first)
+                if (repairPrompt == null) first else {
+                    // At most one contextual repair: reuse the photographs/evidence in this conversation.
+                    // Never let a repair failure discard the usable first proposal or mask cancellation.
+                    stage("assignment_review")
+                    val repairStarted = android.os.SystemClock.elapsedRealtime()
+                    var repaired = false
+                    try { SourceAssignments.preferRepair(first, read(Contents.of(listOf(Content.Text(repairPrompt))))).also { repaired = true } }
+                    catch (e: kotlinx.coroutines.CancellationException) { throw e }
+                    catch (e: Exception) {
+                        currentCoroutineContext().ensureActive()
+                        first.copy(warnings = (first.warnings + "Automatic assignment review could not finish. Check the highlighted fields.").distinct())
+                    } finally {
+                        RecognitionDiagnostics.record(context, RecognitionTiming(RecognitionStage.AssignmentReview,
+                            android.os.SystemClock.elapsedRealtime()-repairStarted, repaired))
+                    }
+                }
             }
             }
+            stage("conversation_closed")
             stage("completed")
+            if(BuildConfig.DEMO) evaluationObserver?.invoke("completed",proposal)
             // Keep weights warm for a short capture batch; conversations always close above.
             // Idle expiry frees memory without retaining a user's inference context.
             idleRelease=runtimeScope.launch {

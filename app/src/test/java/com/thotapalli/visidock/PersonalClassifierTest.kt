@@ -46,4 +46,20 @@ class PersonalClassifierTest {
         assertTrue(values.all {it.isFinite()})
         assertEquals(0f,values[391],0f)
     }
+    @Test fun newGroupsDoNotMoveOldScansBetweenTrainingAndValidation() {
+        val original = (0..8).map { example("scan-$it", "name", "Person $it") }
+        val first = PersonalClassifier.split(original).second.map { it.group }.toSet()
+        val extended = PersonalClassifier.split(original + example("a-new-group", "role", "Director")).second.map { it.group }.toSet()
+        assertEquals(first, extended.intersect(original.map { it.group }.toSet()))
+    }
+    @Test fun conflictingLabelsAreExcludedFromTrainingAndValidation() {
+        val examples = listOf(example("a", "name", "Jordan"), example("b", "company", "Jordan"), example("c", "role", "Director"))
+        assertEquals(listOf("Director"), PersonalClassifier.unambiguous(examples).map { it.text })
+    }
+    @Test fun confidentContradictedAdapterIsRolledBackInsteadOfContinuingBadHints() {
+        val wrong = example("a", "name", "Design Director")
+        val weights = PersonalClassifier.train(List(10) { wrong })
+        assertTrue(PersonalClassifier.contradicted(weights, listOf(wrong.copy(field="role"))))
+        assertFalse(PersonalClassifier.contradicted(PersonalClassifier.empty(), listOf(wrong.copy(field="role"))))
+    }
 }

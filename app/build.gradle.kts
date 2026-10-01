@@ -21,8 +21,8 @@ android {
         applicationId = "com.thotapalli.visidock"
         minSdk = 26
         targetSdk = 36
-        versionCode = providers.gradleProperty("visidock.versionCode").orElse("8").get().toInt()
-        versionName = providers.gradleProperty("visidock.versionName").orElse("0.5.0").get()
+        versionCode = providers.gradleProperty("visidock.versionCode").orElse("9").get().toInt()
+        versionName = providers.gradleProperty("visidock.versionName").orElse("0.6.0").get()
         val imageApi = providers.gradleProperty("visidock.imageApiUrl").orElse("").get()
         buildConfigField("String", "IMAGE_API_URL", "\"" + imageApi.replace("\\", "\\\\").replace("\"", "\\\"") + "\"")
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
@@ -69,6 +69,8 @@ tasks.configureEach {
 }
 kotlin { compilerOptions { jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17) } }
 dependencies {
+    implementation("androidx.biometric:biometric:1.1.0")
+    implementation("com.google.zxing:core:3.5.4")
     implementation(platform("androidx.compose:compose-bom:2024.12.01"))
     implementation("androidx.activity:activity-compose:1.9.3")
     implementation("androidx.compose.ui:ui")
@@ -93,6 +95,10 @@ dependencies {
     implementation("com.google.firebase:firebase-auth")
     implementation("com.google.firebase:firebase-firestore")
     implementation("com.google.mlkit:text-recognition:16.0.1")
+    implementation("com.google.mlkit:text-recognition-chinese:16.0.1")
+    implementation("com.google.mlkit:text-recognition-devanagari:16.0.1")
+    implementation("com.google.mlkit:text-recognition-japanese:16.0.1")
+    implementation("com.google.mlkit:text-recognition-korean:16.0.1")
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation(platform("androidx.compose:compose-bom:2024.12.01"))
     androidTestImplementation("androidx.compose.ui:ui-test-junit4")

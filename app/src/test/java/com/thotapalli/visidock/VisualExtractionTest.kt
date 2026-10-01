@@ -77,7 +77,8 @@ class VisualExtractionTest {
     @Test fun completionWaitsForOuterObjectAcrossEveryChunkBoundary() {
         val json="""{"contacts":[{"name":"Mira {Sen}","address":"Suite \\\"A\\\" [East]"},{"name":"Dev Rao"}],"warnings":["review"]}"""
         for(length in 0 until json.length) assertNull("Incomplete at $length",VisualExtraction.completedJson(json.take(length)))
-        assertEquals(json,VisualExtraction.completedJson("```json\n$json\n``` extra"))
+        assertNull(VisualExtraction.completedJson("```json\n$json\n``` extra"))
+        assertEquals(json,VisualExtraction.completedJson("```json\n$json\n```"))
         assertNull(VisualExtraction.completedJson("{\"other\":[]}"))
     }
     @Test(expected=Exception::class) fun rejectsOversizedPhoneLabel() {

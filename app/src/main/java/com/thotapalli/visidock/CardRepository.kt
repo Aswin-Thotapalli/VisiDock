@@ -14,14 +14,18 @@ import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.tasks.await
 import org.json.JSONArray
 import org.json.JSONObject
 
 data class Session(val uid: String, val email: String, val verified: Boolean, val displayName: String = "")
+data class CardCollectionSnapshot(val cards:List<Card>,val authoritative:Boolean=false)
 interface CardRepository {
     fun session(): Session?
     fun observe(): Flow<List<Card>>
+    fun observeSnapshots():Flow<CardCollectionSnapshot> = observe().map {CardCollectionSnapshot(it)}
     suspend fun signIn(email: String, password: String, register: Boolean)
     suspend fun updateDisplayName(name: String)
     suspend fun resetPassword(email: String)
@@ -29,11 +33,23 @@ interface CardRepository {
     suspend fun refreshSession()
     fun signOut()
     suspend fun save(card: Card, files: ScanFiles?, backFiles: ScanFiles? = null): Card
+    suspend fun commit(card:Card,files:ScanFiles?,backFiles:ScanFiles?,operationId:String):Card = save(card,files,backFiles)
     suspend fun delete(card: Card)
     suspend fun deleteAccount(password: String)
     suspend fun photo(card: Card, back: Boolean = false): ByteArray?
     suspend fun original(card: Card, back: Boolean = false): ByteArray? = photo(card, back)
     suspend fun retryCleanup()
+    fun observeLocalState():Flow<LocalVaultState> = flowOf(LocalVaultState())
+    suspend fun versions(cardId:String):List<CardVersion> = emptyList()
+    suspend fun restore(card:Card):Card = save(card.copy(deletedAt=0),null)
+    suspend fun purge(card:Card) = delete(card)
+    suspend fun restoreVersion(cardId:String,versionId:String):Card = error("History is unavailable for this repository.")
+    suspend fun resolveConflict(cardId:String,keepLocal:Boolean) = Unit
+    suspend fun merge(target:Card,source:Card):Card {
+        val result=save(CardMerge.propose(target,source),null)
+        delete(source)
+        return result
+    }
 }
 
 fun Card.record(status: String = "ready") = mapOf(
@@ -42,7 +58,11 @@ fun Card.record(status: String = "ready") = mapOf(
     "email" to email.trim(), "address" to address.trim(), "website" to website.trim(), "notes" to notes,
     "rawText" to rawText, "imagePath" to imagePath, "originalPath" to originalPath,
     "favorite" to favorite, "createdAt" to createdAt, "status" to status,
-    "backImagePath" to backImagePath, "backOriginalPath" to backOriginalPath, "backRawText" to backRawText, "sourceScanId" to sourceScanId
+    "backImagePath" to backImagePath, "backOriginalPath" to backOriginalPath, "backRawText" to backRawText, "sourceScanId" to sourceScanId,
+    "emails" to contactEmails,"websites" to contactWebsites,"tags" to tags,"collections" to collections,
+    "meetingDate" to meetingDate,"event" to event,"location" to location,
+    "datedNotes" to datedNotes.associate {"${it.createdAt}:${it.id}" to it.text},
+    "isOwnCard" to isOwnCard,"updatedAt" to updatedAt,"revision" to revision,"deletedAt" to deletedAt,"transliteratedName" to transliteratedName
 )
 
 fun cardFrom(id: String, data: Map<String, Any?>): Card {
@@ -50,8 +70,30 @@ fun cardFrom(id: String, data: Map<String, Any?>): Card {
     return Card(id, str("name"), str("role"), str("company"), str("phone"), str("email"), str("address"),
         str("website"), str("notes"), str("rawText"), str("imagePath"), str("originalPath"),
         data["favorite"] as? Boolean ?: false, (data["createdAt"] as? Number)?.toLong() ?: 0, str("backImagePath"), str("backOriginalPath"), str("backRawText"), str("sourceScanId"),
-        phones = phoneNumbersFrom(data["phones"]))
+        phones = phoneNumbersFrom(data["phones"]),emails=stringsFrom(data["emails"]),websites=stringsFrom(data["websites"]),
+        tags=stringsFrom(data["tags"]),collections=stringsFrom(data["collections"]),meetingDate=str("meetingDate"),event=str("event"),location=str("location"),
+        datedNotes=noteEntriesFrom(data["datedNotes"]).mapNotNull {entry->
+            val item=when(entry) {is Map<*,*>->entry;is JSONObject->entry.keys().asSequence().associateWith {entry.opt(it)};else->null} ?: return@mapNotNull null
+            val noteId=item["id"] as? String ?: return@mapNotNull null
+            DatedNote(noteId,item["text"] as? String ?: "",(item["createdAt"] as? Number)?.toLong() ?: 0)
+        },isOwnCard=data["isOwnCard"] as? Boolean ?: false,updatedAt=(data["updatedAt"] as? Number)?.toLong() ?: 0,
+        revision=(data["revision"] as? Number)?.toLong() ?: 0,deletedAt=(data["deletedAt"] as? Number)?.toLong() ?: 0,
+        hasLocalFrontImage=data["hasLocalFrontImage"] as? Boolean ?: false,hasLocalBackImage=data["hasLocalBackImage"] as? Boolean ?: false,transliteratedName=str("transliteratedName"))
 }
+
+private fun entriesFrom(value:Any?):List<*> = when(value) {is List<*>->value;is JSONArray->(0 until value.length()).map {value.opt(it)};else->emptyList<Any>()}
+private fun noteEntriesFrom(value:Any?):List<*> {
+    val map=when(value) {is Map<*,*>->value;is JSONObject->value.keys().asSequence().associateWith {value.opt(it)};else->return entriesFrom(value)}
+    return map.entries.mapNotNull {(key,entry)->
+        if(entry is String) {
+            val encoded=key.toString();val at=encoded.substringBefore(':').toLongOrNull() ?: return@mapNotNull null
+            return@mapNotNull mapOf("id" to encoded.substringAfter(':',""),"text" to entry,"createdAt" to at)
+        }
+        val fields=when(entry) {is Map<*,*>->entry.entries.associate {it.key.toString() to it.value};is JSONObject->entry.keys().asSequence().associateWith {entry.opt(it)};else->return@mapNotNull null}
+        fields+("id" to key.toString())
+    }
+}
+private fun stringsFrom(value:Any?):List<String> = entriesFrom(value).mapNotNull {it as? String}
 
 /** Firestore returns lists/maps; SavedState JSON returns JSONArray/JSONObject. */
 private fun phoneNumbersFrom(value: Any?): List<PhoneNumber> {
@@ -81,13 +123,14 @@ class CloudRepository : CardRepository {
     override fun session() = auth.currentUser?.let { Session(it.uid, it.email.orEmpty(), it.isEmailVerified, it.displayName.orEmpty()) }
     private fun collection(uid: String = checkNotNull(session()).uid) = db.collection("users").document(uid).collection("cards")
     private fun requireSession(uid: String) { check(session()?.uid == uid) { "Your session changed. Sign in again." } }
-    override fun observe(): Flow<List<Card>> = callbackFlow {
-        val listener: ListenerRegistration = collection().addSnapshotListener { snapshot, error ->
+    override fun observe(): Flow<List<Card>> = observeSnapshots().map {it.cards}
+    override fun observeSnapshots():Flow<CardCollectionSnapshot> = callbackFlow {
+        val listener: ListenerRegistration = collection().addSnapshotListener(com.google.firebase.firestore.MetadataChanges.INCLUDE) { snapshot, error ->
             if (error != null) close(error)
-            else trySend(snapshot?.documents.orEmpty().mapNotNull { doc ->
+            else trySend(CardCollectionSnapshot(snapshot?.documents.orEmpty().mapNotNull { doc ->
                 if (doc.getString("status") == "ready" || doc.getString("status") == null) cardFrom(doc.id,doc.data.orEmpty())
                 else if(doc.getString("status") in setOf("uploading","rollingBack")) previousRecord(doc.data.orEmpty())?.let {cardFrom(doc.id,it)} else null
-            })
+            },snapshot!=null && !snapshot.metadata.isFromCache && !snapshot.metadata.hasPendingWrites()))
         }
         awaitClose { listener.remove() }
     }
@@ -126,29 +169,46 @@ class CloudRepository : CardRepository {
     }
     override suspend fun refreshSession() { auth.currentUser?.reload()?.await() }
     override fun signOut() {auth.signOut();images.clearCache()}
-    override suspend fun save(card: Card, files: ScanFiles?, backFiles: ScanFiles?): Card {
+    override suspend fun save(card:Card,files:ScanFiles?,backFiles:ScanFiles?):Card = commit(card,files,backFiles,java.util.UUID.randomUUID().toString())
+    override suspend fun commit(card: Card, files: ScanFiles?, backFiles: ScanFiles?,operationId:String): Card {
         require(CardLogic.validate(card) == null) { CardLogic.validate(card).orEmpty() }
         val uid = checkNotNull(session()).uid
         val doc = collection(uid).document(card.id)
         // Lifecycle decisions must use acknowledged server state, never optimistic cache writes.
         var previous = doc.get(Source.SERVER).await()
+        if(!previous.exists() && card.revision>0) throw CardConflictException(card.copy(revision=0,deletedAt=System.currentTimeMillis(),imagePath="",originalPath="",backImagePath="",backOriginalPath="",hasLocalFrontImage=false,hasLocalBackImage=false))
+        if(previous.getString("status")=="ready" && previous.getString("mutationId")==operationId) return cardFrom(previous.id,previous.data.orEmpty())
+        val baseRevision=previous.getLong("revision") ?: 0L
+        if(previous.exists() && baseRevision!=card.revision && previous.getString("mutationId")!=operationId)
+            throw CardConflictException(cardFrom(previous.id,previous.data.orEmpty()))
+        val committed=card.copy(revision=baseRevision+1,updatedAt=System.currentTimeMillis())
         if(previous.getString("status")=="ready" && previousRecord(previous.data.orEmpty())!=null) {
             cleanupPrevious(uid,card.id,previous.data.orEmpty());previous=doc.get(Source.SERVER).await()
         }
         if (previous.getString("status") == "deleting") delete(uid, cardFrom(previous.id, previous.data.orEmpty()))
         if (files == null && backFiles == null) {
             require(!previous.exists() || previous.getString("status") == "ready") { "This card is still syncing. Retry its scan before editing it." }
-            doc.set(card.record()).await()
-            return card
+            db.runTransaction {transaction->
+                val latest=transaction.get(doc)
+                if(latest.getString("mutationId")==operationId) return@runTransaction
+                if((latest.getLong("revision") ?: 0L)!=baseRevision || latest.exists()!=previous.exists()) throw CardConflictException(cardFrom(latest.id,latest.data.orEmpty()))
+                check(!latest.exists() || latest.getString("status")=="ready") {"This card is still syncing."}
+                transaction.set(doc,committed.record()+("mutationId" to operationId))
+            }.await()
+            return committed
         }
         images.validateConfiguration()
         val sameScan = card.sourceScanId.isNotBlank() && previous.getString("sourceScanId") == card.sourceScanId && previous.getLong("createdAt") == card.createdAt
         // The final ready write may have succeeded even when its response was lost.
         if (previous.getString("status") == "ready" && sameScan) {
             val stored=cardFrom(previous.id,previous.data.orEmpty())
-            val confirmed=card.copy(imagePath=stored.imagePath,originalPath=stored.originalPath,backImagePath=stored.backImagePath,backOriginalPath=stored.backOriginalPath)
+            val confirmed=committed.copy(imagePath=stored.imagePath,originalPath=stored.originalPath,backImagePath=stored.backImagePath,backOriginalPath=stored.backOriginalPath)
             // An image commit may succeed while its response is lost. Preserve later text corrections on retry.
-            if(confirmed!=stored) {requireSession(uid);doc.set(confirmed.record()).await()}
+            if(confirmed!=stored) {requireSession(uid);db.runTransaction {transaction->
+                val latest=transaction.get(doc)
+                if((latest.getLong("revision") ?: 0L)!=baseRevision) throw CardConflictException(cardFrom(latest.id,latest.data.orEmpty()))
+                transaction.set(doc,confirmed.record()+("mutationId" to operationId))
+            }.await()}
             return confirmed
         }
         require(!previous.exists() || previous.getString("status") in setOf("ready","deleting") || (previous.getString("status") == "uploading" && sameScan)) { "Retry the pending image change before starting another." }
@@ -157,7 +217,7 @@ class CloudRepository : CardRepository {
         val revision=card.sourceScanId.replace("-","").takeIf {it.matches(Regex("[a-f0-9]{32}"))} ?: java.util.UUID.randomUUID().toString().replace("-","")
         val prefix="users/$uid/cards/${card.id}/"
         val retry=previous.getString("status")=="uploading"
-        val updated = if(retry) cardFrom(card.id,previous.data.orEmpty()) else card.copy(
+        val updated = if(retry) cardFrom(card.id,previous.data.orEmpty()) else committed.copy(
             imagePath=if(files!=null) "${prefix}preview-r$revision.jpg" else previous.getString("imagePath").orEmpty(),
             originalPath=if(files!=null) "${prefix}original-r$revision" else previous.getString("originalPath").orEmpty(),
             backImagePath=if(backFiles!=null) "${prefix}back-preview-r$revision.jpg" else previous.getString("backImagePath").orEmpty(),
@@ -168,8 +228,12 @@ class CloudRepository : CardRepository {
         }
         // The manifest exists first so even a killed upload remains discoverable for cleanup.
         val prior=if(previous.getString("status")=="ready") previous.data else previousRecord(previous.data.orEmpty())
-        val manifest=updated.record("uploading") + ("uploadStartedAt" to System.currentTimeMillis()) + if(prior!=null) mapOf("previousRecord" to prior) else emptyMap()
-        doc.set(manifest).await()
+        val manifest=updated.record("uploading") + mapOf("uploadStartedAt" to System.currentTimeMillis(),"mutationId" to operationId) + if(prior!=null) mapOf("previousRecord" to prior) else emptyMap()
+        db.runTransaction {transaction->
+            val latest=transaction.get(doc)
+            if(latest.getString("mutationId")!=operationId && ((latest.getLong("revision") ?: 0L)!=baseRevision || latest.exists()!=previous.exists())) throw CardConflictException(cardFrom(latest.id,latest.data.orEmpty()))
+            transaction.set(doc,manifest)
+        }.await()
         try {
             if(files!=null) {
                 images.put(uid, card.id, updated.originalPath.substringAfterLast('/'), files.original, files.mime)
@@ -225,13 +289,16 @@ class CloudRepository : CardRepository {
         }.await()
     }
     override suspend fun delete(card: Card) = delete(checkNotNull(session()).uid, card)
-    private suspend fun delete(uid: String, card: Card, onlyStaleUpload:Boolean=false) {
+    override suspend fun purge(card:Card) = delete(checkNotNull(session()).uid,card,expectedRevision=card.revision)
+    private suspend fun delete(uid: String, card: Card, onlyStaleUpload:Boolean=false,expectedRevision:Long?=null) {
         requireSession(uid)
         if (card.originalPath.isNotBlank() || card.imagePath.isNotBlank()) images.validateConfiguration()
         val doc = collection(uid).document(card.id)
         // Keep the manifest until both objects are confirmed gone. Retrying is idempotent.
         val data=db.runTransaction {transaction ->
             val snapshot=transaction.get(doc)
+            if(snapshot.exists() && snapshot.getString("status")!="deleting" && expectedRevision!=null && (snapshot.getLong("revision") ?: 0L)!=expectedRevision)
+                throw CardConflictException(cardFrom(snapshot.id,snapshot.data.orEmpty()))
             val stale=snapshot.getString("status")=="uploading" && (snapshot.getLong("uploadStartedAt") ?: snapshot.getLong("createdAt") ?: Long.MAX_VALUE)<System.currentTimeMillis()-86_400_000
             if(snapshot.exists() && (!onlyStaleUpload || stale)) {transaction.update(doc,"status","deleting");snapshot.data.orEmpty()} else emptyMap()
         }.await()
@@ -301,6 +368,8 @@ class DemoRepository : CardRepository {
     ))
     private val photos = mutableMapOf<String, ByteArray>()
     private val originals = mutableMapOf<String, ByteArray>()
+    private val localState=MutableStateFlow(LocalVaultState())
+    private val history=mutableMapOf<String,MutableList<CardVersion>>()
     init {
         if(BuildConfig.DEMO) cards.value=cards.value.map {card ->
             photos[card.id]=DemoCardImages.preview(card,false)
@@ -310,6 +379,14 @@ class DemoRepository : CardRepository {
     }
     override fun session() = Session("demo", "Demo collection", true)
     override fun observe(): Flow<List<Card>> = cards
+    override fun observeLocalState():Flow<LocalVaultState> = localState
+    override suspend fun versions(cardId:String)=history[cardId].orEmpty().reversed()
+    override suspend fun restoreVersion(cardId:String,versionId:String):Card {
+        val prior=history[cardId].orEmpty().first {it.id==versionId}.card
+        val current=(cards.value+localState.value.deletedCards).first {it.id==cardId}
+        return save(prior.copy(revision=current.revision,deletedAt=0,imagePath=current.imagePath,originalPath=current.originalPath,
+            backImagePath=current.backImagePath,backOriginalPath=current.backOriginalPath,sourceScanId=current.sourceScanId),null)
+    }
     override suspend fun signIn(email: String, password: String, register: Boolean) = Unit
     override suspend fun updateDisplayName(name: String) = Unit
     override suspend fun resetPassword(email: String) = Unit
@@ -317,16 +394,21 @@ class DemoRepository : CardRepository {
     override suspend fun refreshSession() = Unit
     override fun signOut() = Unit
     override suspend fun save(card: Card, files: ScanFiles?, backFiles: ScanFiles?): Card {
+        (cards.value+localState.value.deletedCards).firstOrNull {it.id==card.id}?.let {old->
+            history.getOrPut(card.id) {mutableListOf()}.add(CardVersion(java.util.UUID.randomUUID().toString(),old,System.currentTimeMillis()))
+        }
         files?.let { photos[card.id] = it.preview.readBytes() }
         backFiles?.let { photos[card.id+"-back"] = it.preview.readBytes() }
         files?.let {originals[card.id]=it.original.readBytes()};backFiles?.let {originals[card.id+"-back"]=it.original.readBytes()}
         val revision=java.util.UUID.randomUUID()
-        val stored=card.copy(imagePath=if(files!=null) "demo-front-$revision" else card.imagePath,backImagePath=if(backFiles!=null) "demo-back-$revision" else card.backImagePath)
-        cards.value = cards.value.filterNot { it.id == card.id } + stored
+        val stored=card.copy(revision=card.revision+1,updatedAt=System.currentTimeMillis(),imagePath=if(files!=null) "demo-front-$revision" else card.imagePath,backImagePath=if(backFiles!=null) "demo-back-$revision" else card.backImagePath)
+        cards.value = cards.value.filterNot { it.id == card.id } + listOf(stored).filter {it.deletedAt==0L}
+        localState.value=localState.value.copy(deletedCards=localState.value.deletedCards.filterNot {it.id==card.id}+listOf(stored).filter {it.deletedAt>0})
         return stored
     }
-    override suspend fun delete(card: Card) { cards.value = cards.value.filterNot { it.id == card.id }; photos.remove(card.id); photos.remove(card.id+"-back");originals.remove(card.id);originals.remove(card.id+"-back") }
-    override suspend fun deleteAccount(password: String) { cards.value = emptyList(); photos.clear();originals.clear() }
+    override suspend fun delete(card:Card) {save(card.copy(deletedAt=System.currentTimeMillis()),null)}
+    override suspend fun purge(card:Card) {cards.value=cards.value.filterNot {it.id==card.id};localState.value=localState.value.copy(deletedCards=localState.value.deletedCards.filterNot {it.id==card.id});history.remove(card.id);photos.remove(card.id);photos.remove(card.id+"-back");originals.remove(card.id);originals.remove(card.id+"-back")}
+    override suspend fun deleteAccount(password: String) { cards.value = emptyList(); photos.clear();originals.clear();history.clear();localState.value=LocalVaultState() }
     override suspend fun photo(card: Card, back: Boolean) = photos[card.id+if(back) "-back" else ""]
     override suspend fun original(card:Card,back:Boolean)=originals[card.id+if(back) "-back" else ""] ?: photo(card,back)
     override suspend fun retryCleanup() = Unit

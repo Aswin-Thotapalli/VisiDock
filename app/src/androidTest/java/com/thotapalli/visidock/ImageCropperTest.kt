@@ -146,9 +146,12 @@ class ImageCropperTest {
         gallery.outputStream().use {image.compress(Bitmap.CompressFormat.JPEG,90,it)};image.recycle()
         val handle=androidx.lifecycle.SavedStateHandle()
         val firstStore=androidx.lifecycle.ViewModelStore();val secondStore=androidx.lifecycle.ViewModelStore()
+        val drafts=DraftStore(app)
+        drafts.clear(DemoRepository().session().uid)
         try {
             val vm=withContext(Dispatchers.Main) {VaultViewModel(app,handle).also {firstStore.put("crop",it)}}
-            withContext(Dispatchers.Main) {vm.stageCrop(Uri.fromFile(gallery))}
+            withTimeout(10000) {vm.state.first {!it.loading && it.busy==null}}
+            withContext(Dispatchers.Main) {vm.beginCapture();vm.stageCrop(Uri.fromFile(gallery))}
             val staged=withTimeout(10000) {vm.state.first {it.cropPath!=null && it.busy==null}}
             val privateFile=File(checkNotNull(staged.cropPath))
             assertTrue(privateFile.exists());assertTrue(gallery.exists())
@@ -157,11 +160,12 @@ class ImageCropperTest {
                 firstStore.clear()
                 VaultViewModel(app,androidx.lifecycle.SavedStateHandle(snapshot)).also {secondStore.put("crop",it)}
             }
+            withTimeout(10000) {restored.state.first {!it.loading && it.busy==null}}
             assertEquals(privateFile.path,restored.state.value.cropPath)
             withContext(Dispatchers.Main) {restored.cancelCrop()}
             assertFalse(privateFile.exists());assertTrue(gallery.exists())
             assertNull(restored.state.value.cropPath)
-        } finally {withContext(Dispatchers.Main) {firstStore.clear();secondStore.clear()};gallery.delete()}
+        } finally {withContext(Dispatchers.Main) {firstStore.clear();secondStore.clear()};drafts.clear(DemoRepository().session().uid);gallery.delete()}
     }
     @Test fun perspectiveWarpRemovesBackgroundAndRejectsCrossedCorners() {
         val image=Bitmap.createBitmap(400,300,Bitmap.Config.ARGB_8888)

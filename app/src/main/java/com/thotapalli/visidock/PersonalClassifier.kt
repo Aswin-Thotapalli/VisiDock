@@ -59,8 +59,20 @@ object PersonalClassifier {
     fun split(examples:List<PersonalExample>):Pair<List<PersonalExample>,List<PersonalExample>> {
         val groups=examples.map {it.group}.distinct().sorted()
         if(groups.size<6) return examples to emptyList()
-        val holdout=groups.filterIndexed {i,_ -> i%3==0}.toSet()
+        // Hashing keeps a scan in the same partition when more corrections arrive later.
+        val holdout=groups.filter { Math.floorMod(it.hashCode(), 3) == 0 }.toSet()
         return examples.filter {it.group !in holdout} to examples.filter {it.group in holdout}
+    }
+    fun unambiguous(examples: List<PersonalExample>): List<PersonalExample> {
+        val disputed = examples.groupBy { CorrectionPolicy.normalize(it.text) }
+            .filterValues { values -> values.map { it.field }.distinct().size > 1 }.keys
+        return examples.filter { it.field in fields && it.features.size == DIM && it.features.all(Float::isFinite) &&
+            CorrectionPolicy.normalize(it.text) !in disputed }
+    }
+    /** New explicit corrections can disprove an active adapter before its next scheduled training run. */
+    fun contradicted(weights: Array<FloatArray>, corrections: List<PersonalExample>): Boolean = corrections.any {
+        val prediction = predict(weights, it.features)
+        prediction.confidence >= .85f && prediction.field != it.field
     }
     fun acceptable(old:Array<FloatArray>, candidate:Array<FloatArray>, validation:List<PersonalExample>):Boolean =
         validation.isNotEmpty() && accuracy(candidate,validation)>=accuracy(old,validation) && loss(candidate,validation)+0.005<loss(old,validation) &&

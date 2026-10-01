@@ -1,6 +1,9 @@
 package com.thotapalli.visidock
 
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.width
+import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Text
@@ -40,6 +43,43 @@ class MotionInteractionTest {
         compose.runOnIdle {assertEquals(3,commits);loading=false}
         button.assertIsEnabled().performClick()
         compose.runOnIdle {assertEquals(4,commits)}
+    }
+
+    @Test fun physicalButtonsPreserveRequestedSizesAndAccessibleTouchSpace() {
+        var presses=0
+        compose.setContent {VisiDockTheme {Column {
+            DockButton({presses++},Modifier.testTag("normal")) {Text("Save")}
+            DockOutlinedButton({presses++},Modifier.width(220.dp).height(64.dp).testTag("large")) {Text("Import")}
+            DockFilledIconButton({presses++},Modifier.testTag("icon")) {Text("+")}
+        }}}
+        // The decorated plate is 40dp; its independent, invisible touch target is 48dp.
+        // Asserting the plate at 48dp would reintroduce the mismatched button border.
+        compose.onNodeWithTag("normal").assertHeightIsEqualTo(40.dp).assertTouchHeightIsEqualTo(48.dp)
+        compose.onNodeWithTag("icon").assertHeightIsEqualTo(40.dp).assertWidthIsEqualTo(40.dp)
+            .assertTouchHeightIsEqualTo(48.dp).assertTouchWidthIsEqualTo(48.dp)
+        compose.onNodeWithTag("large").assertHeightIsEqualTo(64.dp).assertWidthIsEqualTo(220.dp)
+        // Edge taps in the invisible touch margin must still reach the control.
+        compose.onNodeWithTag("normal").performTouchInput {click(Offset(center.x,-2.dp.toPx()))}
+        compose.onNodeWithTag("icon").performTouchInput {click(Offset(center.x,-2.dp.toPx()))}
+        compose.runOnIdle {assertEquals(2,presses)}
+    }
+
+    @Test fun selectionRowAndPlateShareOneAccessibleStateAndOneCallback() {
+        var checked by mutableStateOf(false)
+        var enabled by mutableStateOf(true)
+        var changes=0
+        compose.setContent {VisiDockTheme {Column {
+            DockSelectionRow("My own card",checked,{checked=it;changes++},Modifier.testTag("selection"),enabled)
+            DockCheckbox(checked,{checked=it;changes++},Modifier.testTag("plate"),enabled)
+        }}}
+        compose.onNodeWithTag("selection").assertIsOff()
+        compose.onNodeWithText("My own card").performClick()
+        compose.onNodeWithTag("selection").assertIsOn()
+        compose.onNodeWithTag("plate").assertIsOn().performClick().assertIsOff()
+        compose.runOnIdle {assertEquals(2,changes);enabled=false}
+        compose.onNodeWithTag("selection").assertIsNotEnabled().performTouchInput {click()}
+        compose.onNodeWithTag("plate").assertIsNotEnabled().performTouchInput {click()}
+        compose.runOnIdle {assertEquals(2,changes)}
     }
 
     @Test fun animatedToggleAndFieldRetainCheckedEditingAndImeSemantics() {
