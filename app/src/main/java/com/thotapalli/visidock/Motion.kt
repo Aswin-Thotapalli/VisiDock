@@ -107,27 +107,30 @@ internal object CardTurnPhysics {
 
 fun Modifier.dockReflow()=animateContentSize(DockMotion.spec(220))
 
-private val motionShadow=Color(0xFF123366)
 private enum class ControlResponse { Surface, Outline, Link, Icon, Toggle, Navigation }
 
 /** A single response handles press, canceled press, keyboard focus, hover and disabled changes. */
 fun Modifier.dockPress(interactions:MutableInteractionSource,shape:Shape?=null)=composed {
-    dockControl(interactions,shape=shape ?: MaterialTheme.shapes.medium)
+    dockControl(interactions,shape=shape ?: MaterialTheme.shapes.medium,depth=4f)
 }
 
 private fun Modifier.dockControl(
     interactions:MutableInteractionSource,
     enabled:Boolean=true,
     shape:Shape=CircleShape,
-    compression:Float=.035f,
     depth:Float=0f,
     response:ControlResponse=ControlResponse.Surface
 )=composed {
     val pressed by interactions.collectIsPressedAsState()
     val focused by interactions.collectIsFocusedAsState()
     val hovered by interactions.collectIsHoveredAsState()
+    val material=when(response) {
+        ControlResponse.Surface -> PhysicalMaterial.Leather
+        ControlResponse.Icon,ControlResponse.Toggle,ControlResponse.Navigation -> PhysicalMaterial.Metal
+        else -> PhysicalMaterial.Paper
+    }
     val pressure=animateFloatAsState(if(pressed && enabled) 1f else 0f,
-        if(pressed) DockMotion.spec(80) else DockMotion.settle(650f,.74f),label="Contact pressure")
+        if(pressed) DockMotion.spec(80) else if(ValueAnimator.areAnimatorsEnabled()) PhysicalMotion.settle(material) else tween(0),label="Contact pressure")
     val attention=animateFloatAsState(if(enabled && (focused || hovered)) 1f else 0f,
         DockMotion.spec(150),label="Control focus")
     val highlight=MaterialTheme.colorScheme.primary
@@ -135,15 +138,17 @@ private fun Modifier.dockControl(
         val p=pressure.value
         when(response) {
             ControlResponse.Link,ControlResponse.Navigation -> {scaleX=1f;scaleY=1f;translationY=0f}
-            ControlResponse.Toggle -> {scaleX=1f+p*.025f;scaleY=1f-p*.025f}
-            else -> {scaleX=1f-p*compression;scaleY=1f-p*compression;translationY=p*.8f*density-attention.value*.6f*density}
+            ControlResponse.Toggle -> {scaleX=1f;scaleY=1f;translationY=p*.4f*density}
+            else -> {val pose=PhysicalMotion.surface(depth,p,material);scaleX=pose.scale;scaleY=pose.scale;translationY=p*.8f*density-attention.value*.6f*density}
         }
-        // Android 26/27 cannot tint native shadows; avoid their black fallback entirely.
-        shadowElevation=if(enabled && android.os.Build.VERSION.SDK_INT>=28)
-            ((depth*(1f-p.coerceIn(0f,1f)))+attention.value*1.5f)*density else 0f
-        ambientShadowColor=motionShadow;spotShadowColor=motionShadow
+        // Shadow, contact and bevel now share the same material/depth model on
+        // every Android version; native default lighting is not a second source.
+        shadowElevation=0f
         this.shape=shape;clip=false
-    }.drawWithCache {
+    }.physicalSurface(depthDp=if(enabled && response!=ControlResponse.Link) depth else 0f,
+        pressedFraction={pressure.value},shape=shape,material=material,
+        castShadow=enabled && depth>0f,drawBevel=false)
+        .drawWithCache {
         val outline=shape.createOutline(size,layoutDirection,this)
         onDrawWithContent {
             drawContent()
@@ -180,7 +185,7 @@ private fun Modifier.dockControl(
 @Composable fun DockButton(onClick:()->Unit,modifier:Modifier=Modifier,enabled:Boolean=true,
     colors:ButtonColors=ButtonDefaults.buttonColors(),haptic:Boolean=true,loading:Boolean=false,content:@Composable RowScope.()->Unit) {
     val source=remember {MutableInteractionSource()}
-    Button(onClick=dockClick(onClick,haptic),modifier=modifier.dockControl(source,enabled && !loading,compression=.04f,depth=1.5f),
+    Button(onClick=dockClick(onClick,haptic),modifier=modifier.dockControl(source,enabled && !loading,depth=4f),
         enabled=enabled && !loading,interactionSource=source,colors=colors,
         elevation=ButtonDefaults.buttonElevation(0.dp,0.dp,0.dp,0.dp,0.dp)) {
         androidx.compose.animation.AnimatedVisibility(loading,
@@ -195,7 +200,7 @@ private fun Modifier.dockControl(
 @Composable fun DockOutlinedButton(onClick:()->Unit,modifier:Modifier=Modifier,enabled:Boolean=true,
     colors:ButtonColors=ButtonDefaults.outlinedButtonColors(),haptic:Boolean=true,content:@Composable RowScope.()->Unit) {
     val source=remember {MutableInteractionSource()}
-    OutlinedButton(onClick=dockClick(onClick,haptic),modifier=modifier.dockControl(source,enabled,compression=.018f,response=ControlResponse.Outline),
+    OutlinedButton(onClick=dockClick(onClick,haptic),modifier=modifier.dockControl(source,enabled,depth=2f,response=ControlResponse.Outline),
         enabled=enabled,interactionSource=source,colors=colors,content=content)
 }
 
@@ -209,14 +214,14 @@ private fun Modifier.dockControl(
 @Composable fun DockIconButton(onClick:()->Unit,modifier:Modifier=Modifier,enabled:Boolean=true,
     colors:IconButtonColors=IconButtonDefaults.iconButtonColors(),haptic:Boolean=true,content:@Composable ()->Unit) {
     val source=remember {MutableInteractionSource()}
-    IconButton(onClick=dockClick(onClick,haptic),modifier=modifier.dockControl(source,enabled,compression=.09f,response=ControlResponse.Icon),
+    IconButton(onClick=dockClick(onClick,haptic),modifier=modifier.dockControl(source,enabled,response=ControlResponse.Icon),
         enabled=enabled,interactionSource=source,colors=colors,content=content)
 }
 
 @Composable fun DockFilledIconButton(onClick:()->Unit,modifier:Modifier=Modifier,enabled:Boolean=true,
     shape:Shape=CircleShape,colors:IconButtonColors=IconButtonDefaults.filledIconButtonColors(),haptic:Boolean=true,content:@Composable ()->Unit) {
     val source=remember {MutableInteractionSource()}
-    FilledIconButton(onClick=dockClick(onClick,haptic),modifier=modifier.dockControl(source,enabled,shape,compression=.07f,depth=2f),
+    FilledIconButton(onClick=dockClick(onClick,haptic),modifier=modifier.dockControl(source,enabled,shape,depth=4f),
         enabled=enabled,interactionSource=source,shape=shape,colors=colors,content=content)
 }
 
@@ -226,7 +231,7 @@ private fun Modifier.dockControl(
     val feedback=LocalHapticFeedback.current
     val selected=animateFloatAsState(if(checked) 1f else 0f,DockMotion.settle(480f,.8f),label="Icon selection")
     IconToggleButton(checked=checked,onCheckedChange={if(haptic) feedback.performHapticFeedback(HapticFeedbackType.TextHandleMove);onCheckedChange(it)},
-        modifier=modifier.dockControl(source,enabled,compression=.08f,response=ControlResponse.Icon),enabled=enabled,colors=colors,interactionSource=source) {
+        modifier=modifier.dockControl(source,enabled,response=ControlResponse.Icon),enabled=enabled,colors=colors,interactionSource=source) {
         Box(Modifier.graphicsLayer {scaleX=1f+selected.value*.045f;scaleY=scaleX},contentAlignment=androidx.compose.ui.Alignment.Center) {content()}
     }
 }
@@ -236,14 +241,14 @@ private fun Modifier.dockControl(
     val source=remember {MutableInteractionSource()}
     val selection=animateFloatAsState(if(selected) 1f else 0f,DockMotion.settle(520f,.84f),label="Chip selection")
     FilterChip(selected=selected,onClick=dockClick(onClick,haptic),label=label,modifier=modifier.graphicsLayer {translationY=-selection.value*density}
-        .dockControl(source,enabled,MaterialTheme.shapes.small,compression=.025f,response=ControlResponse.Outline),
+        .dockControl(source,enabled,MaterialTheme.shapes.small,response=ControlResponse.Outline),
         enabled=enabled,leadingIcon=leadingIcon,trailingIcon=trailingIcon,interactionSource=source)
 }
 
 @Composable fun DockAssistChip(onClick:()->Unit,label:@Composable ()->Unit,modifier:Modifier=Modifier,
     enabled:Boolean=true,leadingIcon:(@Composable ()->Unit)?=null,trailingIcon:(@Composable ()->Unit)?=null,haptic:Boolean=true) {
     val source=remember {MutableInteractionSource()}
-    AssistChip(onClick=dockClick(onClick,haptic),label=label,modifier=modifier.dockControl(source,enabled,MaterialTheme.shapes.small,compression=.035f),
+    AssistChip(onClick=dockClick(onClick,haptic),label=label,modifier=modifier.dockControl(source,enabled,MaterialTheme.shapes.small,response=ControlResponse.Outline),
         enabled=enabled,leadingIcon=leadingIcon,trailingIcon=trailingIcon,interactionSource=source)
 }
 
@@ -285,7 +290,7 @@ private fun Modifier.dockControl(
     elevation:FloatingActionButtonElevation=FloatingActionButtonDefaults.elevation(0.dp,0.dp,0.dp,0.dp),haptic:Boolean=true) {
     val source=remember {MutableInteractionSource()}
     ExtendedFloatingActionButton(onClick=dockClick(onClick,haptic),text=text,icon=icon,expanded=expanded,
-        modifier=modifier.dockControl(source,shape=shape,compression=.045f,depth=3f),shape=shape,
+        modifier=modifier.dockControl(source,shape=shape,depth=7f),shape=shape,
         containerColor=containerColor,contentColor=contentColor,elevation=elevation,interactionSource=source)
 }
 

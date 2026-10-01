@@ -80,6 +80,7 @@ private class CropBitmapLease(private val bitmap:Bitmap) {
     var points by rememberSaveable(path) {mutableStateOf(floatArrayOf(0f,0f,1f,0f,1f,1f,0f,1f))}
     var initialized by rememberSaveable(path) {mutableStateOf(false)}
     var detected by rememberSaveable(path) {mutableStateOf(false)}
+    var uncertain by rememberSaveable(path) {mutableStateOf(false)}
     var adjusting by rememberSaveable(path) {mutableStateOf(false)}
     var proposal by remember(path) {mutableStateOf<List<Float>?>(null)}
     var cropped by remember(path) {mutableStateOf<Bitmap?>(null)}
@@ -104,9 +105,9 @@ private class CropBitmapLease(private val bitmap:Bitmap) {
     LaunchedEffect(path) {
         var pending:Bitmap?=null
         try {
-            val result=withContext(Dispatchers.IO) {val photo=ImageCropper.decode(File(path),1600).also {pending=it};photo to ImageCropper.detect(photo)}
-            imageOwner=CropBitmapLease(result.first);bitmap=result.first;proposal=result.second;pending=null
-            if(!initialized) {points=(result.second ?: listOf(0f,0f,1f,0f,1f,1f,0f,1f)).toFloatArray();detected=result.second!=null;adjusting=!detected;initialized=true}
+            val result=withContext(Dispatchers.IO) {val photo=ImageCropper.decode(File(path),1600).also {pending=it};photo to ImageCropper.detectWithConfidence(photo)}
+            imageOwner=CropBitmapLease(result.first);bitmap=result.first;proposal=result.second?.points;pending=null
+            if(!initialized) {points=(result.second?.points ?: listOf(0f,0f,1f,0f,1f,1f,0f,1f)).toFloatArray();detected=result.second!=null;uncertain=(result.second?.confidence ?: 0f)<.82f;adjusting=!detected || uncertain;initialized=true}
         }
         catch(e:kotlinx.coroutines.CancellationException) {throw e}
         catch(e:Exception) {loadError="This photo could not be opened. Choose another photo."}
@@ -171,7 +172,7 @@ private class CropBitmapLease(private val bitmap:Bitmap) {
             val layoutDirection=LocalLayoutDirection.current
             val textMeasurer=rememberTextMeasurer()
             val instructionStyle=MaterialTheme.typography.bodyMedium
-            val instructions=remember {listOf("Move the corners onto the card edges.","Card edges found. Check the crop, then continue.","Check your crop before continuing.")}
+            val instructions=remember {listOf("Move the corners onto the card edges.","Card edges found. Check the crop, then continue.","Check your crop before continuing.","Possible card edges found. Check the four corners.","Card edges could not be found. Place the four corners manually.")}
             val instructionHeight=remember(maxWidth,density,layoutDirection,instructionStyle,textMeasurer) {
                 val width=with(density) {(maxWidth-40.dp).roundToPx().coerceAtLeast(1)}
                 val pixels=instructions.maxOf {textMeasurer.measure(AnnotatedString(it),style=instructionStyle,constraints=Constraints(maxWidth=width)).size.height}
@@ -179,7 +180,7 @@ private class CropBitmapLease(private val bitmap:Bitmap) {
             }
             Box(Modifier.fillMaxWidth().height(instructionHeight),contentAlignment=Alignment.CenterStart) {
                 AnimatedContent(targetState=adjusting,transitionSpec={fadeIn(DockMotion.spec(180)) togetherWith fadeOut(DockMotion.spec(90))},label="Crop instructions") {adjust ->
-                    Text(instructions[if(adjust) 0 else if(detected) 1 else 2],Modifier.padding(horizontal=20.dp,vertical=8.dp),style=instructionStyle)
+                    Text(instructions[if(adjust && !detected) 4 else if(adjust && uncertain) 3 else if(adjust) 0 else if(detected) 1 else 2],Modifier.padding(horizontal=20.dp,vertical=8.dp),style=instructionStyle)
                 }
             }
         }

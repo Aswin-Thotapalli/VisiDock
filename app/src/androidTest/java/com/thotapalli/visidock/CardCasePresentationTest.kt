@@ -1,5 +1,9 @@
 package com.thotapalli.visidock
 
+import android.graphics.Bitmap
+import androidx.compose.ui.graphics.asAndroidBitmap
+import androidx.test.platform.app.InstrumentationRegistry
+import java.io.File
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
@@ -25,8 +29,14 @@ class CardCasePresentationTest {
         var focused by mutableStateOf<String?>("b")
         var opened:String?=null
         compose.setContent {VisiDockTheme {
-            CardCase(cards,focused,{focused=it},{opened=it.id},{chosen->cards=cards.map {if(it.id==chosen.id) it.copy(favorite=!it.favorite) else it}},false,image={Text("Photo ${it.id}")})
+            CardCase(cards,focused,{focused=it},{opened=it.id},{chosen->cards=cards.map {if(it.id==chosen.id) it.copy(favorite=!it.favorite) else it}},false,ownerName="Aswin",image={Text("Photo ${it.id}")})
         }}
+        compose.onNodeWithContentDescription("Aswin’s VisiDock").assertExists()
+        val capture=compose.onRoot().captureToImage().asAndroidBitmap()
+        val context=InstrumentationRegistry.getInstrumentation().targetContext
+        val target=File(context.getExternalFilesDir(null),"ui-review/personal-case-imprint.png").apply {parentFile?.mkdirs()}
+        try {target.outputStream().use {assertTrue(capture.compress(Bitmap.CompressFormat.PNG,100,it))}} finally {capture.recycle()}
+
         compose.onNodeWithText("Open card").performClick()
         compose.runOnIdle {assertEquals("b",opened)}
         compose.onNodeWithText("Favorite",substring=false).performClick()

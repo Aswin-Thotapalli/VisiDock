@@ -4,6 +4,10 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Matrix
+import android.graphics.BitmapRegionDecoder
+import android.graphics.Rect
+import android.graphics.RectF
+import android.os.SystemClock
 import android.net.Uri
 import androidx.exifinterface.media.ExifInterface
 import com.google.mlkit.vision.common.InputImage
@@ -18,7 +22,7 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.UUID
 
-data class ScanFiles(val original: File, val preview: File, val mime: String, val text: String, val regions: List<OcrRegion> = emptyList())
+data class ScanFiles(val original: File, val preview: File, val mime: String, val text: String, val regions: List<OcrRegion> = emptyList(), val evidence: OcrEvidence = OcrEvidence())
 
 object ImagePipeline {
     const val MAX_ORIGINAL = 20L * 1024 * 1024
@@ -111,20 +115,88 @@ object ImagePipeline {
             bitmap = Bitmap.createBitmap(decoded, 0, 0, decoded.width, decoded.height, matrix, true)
             currentCoroutineContext().ensureActive()
             val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
-            val recognized = try {
+            try {
                 // Native recognition must finish before its bitmap can safely be released.
-                withContext(NonCancellable) { recognizer.process(InputImage.fromBitmap(bitmap, 0)).await() }
+                val recognized = withContext(NonCancellable) { recognizer.process(InputImage.fromBitmap(bitmap, 0)).await() }
+                currentCoroutineContext().ensureActive()
+                fun observations(text: com.google.mlkit.vision.text.Text, w: Int, h: Int, area: OcrRegion?, pass: String) =
+                    text.textBlocks.flatMap { it.lines }.mapNotNull { line -> line.boundingBox?.let { box ->
+                        val left = area?.left ?: 0f; val top = area?.top ?: 0f
+                        val width = (area?.right ?: 1f) - left; val height = (area?.bottom ?: 1f) - top
+                        OcrObservation(OcrRegion(line.text, left+box.left.toFloat()/w*width,
+                            top+box.top.toFloat()/h*height, left+box.right.toFloat()/w*width,
+                            top+box.bottom.toFloat()/h*height), line.confidence.takeIf { it.isFinite() && it > 0f && it <= 1f }, pass)
+                    } }
+                var evidence = OcrEvidence(observations(recognized, bitmap.width, bitmap.height, null, "full"))
+                val plan = OcrDetailPlanner.plan(evidence.lines, bitmap.width, bitmap.height)
+                // This is an admission budget, not a native-task timeout. Never recycle a bitmap
+                // while ML Kit owns it. Good scans do not enter this loop.
+                val started = SystemClock.elapsedRealtime()
+                var pixels = 0L
+                for (region in plan) {
+                    currentCoroutineContext().ensureActive()
+                    if (SystemClock.elapsedRealtime()-started > 1800 || pixels >= 3_000_000L) break
+                    val detail = decodeDetail(files.original, bounds.outWidth, bounds.outHeight, matrix, region) ?: continue
+                    try {
+                        if (pixels + detail.bitmap.width.toLong()*detail.bitmap.height > 3_000_000L) continue
+                        pixels += detail.bitmap.width.toLong()*detail.bitmap.height
+                        val reading = try {
+                            withContext(NonCancellable) { recognizer.process(InputImage.fromBitmap(detail.bitmap, 0)).await() }
+                        } catch (_: Exception) {
+                            currentCoroutineContext().ensureActive()
+                            continue // Optional detail OCR must not discard the complete successful first pass.
+                        }
+                        currentCoroutineContext().ensureActive()
+                        evidence = evidence.merge(observations(reading, detail.bitmap.width, detail.bitmap.height, detail.area, "detail"))
+                    } finally { detail.bitmap.recycle() }
+                }
+                val additional = evidence.lines.filter { it.pass == "detail" }.map { it.region.text }
+                val text = (listOf(recognized.text) + additional).filter(String::isNotBlank).joinToString("\n")
+                files.copy(text = text, regions = evidence.lines.map { it.region }, evidence = evidence)
             } finally { recognizer.close() }
-            currentCoroutineContext().ensureActive()
-            val regions = recognized.textBlocks.flatMap { it.lines }.mapNotNull { line ->
-                line.boundingBox?.let { box -> OcrRegion(line.text, box.left.toFloat()/bitmap.width,
-                    box.top.toFloat()/bitmap.height, box.right.toFloat()/bitmap.width, box.bottom.toFloat()/bitmap.height) }
-            }
-            files.copy(text = recognized.text, regions = regions)
         } finally {
             if (bitmap !== decoded) bitmap.recycle()
             decoded.recycle()
         }
+    }
+
+    private data class Detail(val bitmap: Bitmap, val area: OcrRegion)
+
+    /** Decode only selected native pixels, with EXIF mapped both ways; never allocate a second full photo. */
+    @Suppress("DEPRECATION")
+    private fun decodeDetail(file: File, width: Int, height: Int, orientation: Matrix, area: OcrRegion): Detail? {
+        val upright = RectF(0f, 0f, width.toFloat(), height.toFloat())
+        orientation.mapRect(upright)
+        val forward = Matrix(orientation).apply { postTranslate(-upright.left, -upright.top) }
+        val inverse = Matrix()
+        if (!forward.invert(inverse)) return null
+        val raw = RectF(area.left*upright.width(), area.top*upright.height(), area.right*upright.width(), area.bottom*upright.height())
+        inverse.mapRect(raw)
+        val rect = Rect(kotlin.math.floor(raw.left).toInt().coerceIn(0,width-1), kotlin.math.floor(raw.top).toInt().coerceIn(0,height-1),
+            kotlin.math.ceil(raw.right).toInt().coerceIn(1,width), kotlin.math.ceil(raw.bottom).toInt().coerceIn(1,height))
+        if (rect.width() <= 0 || rect.height() <= 0) return null
+        // Integer region rounding must be reflected in the returned source geometry.
+        val actual = RectF(rect); forward.mapRect(actual)
+        var decoder: BitmapRegionDecoder? = null
+        var decoded: Bitmap? = null
+        var rotated: Bitmap? = null
+        try {
+            decoder = BitmapRegionDecoder.newInstance(file.path, false) ?: return null
+            var sample = 1
+            while (rect.width().toLong()*rect.height()/(sample.toLong()*sample) > 1_500_000L ||
+                maxOf(rect.width(), rect.height())/sample > 4800) sample *= 2
+            decoded = decoder.decodeRegion(rect, BitmapFactory.Options().apply { inSampleSize = sample }) ?: return null
+            rotated = Bitmap.createBitmap(decoded, 0, 0, decoded.width, decoded.height, orientation, true)
+            val result = checkNotNull(rotated)
+            rotated = null
+            if (result === decoded) decoded = null
+            return Detail(result, area.copy(left=actual.left/upright.width(), top=actual.top/upright.height(),
+                right=actual.right/upright.width(), bottom=actual.bottom/upright.height()))
+        } catch (_: IllegalArgumentException) {
+            return null // An unsupported optional region decode must not discard the successful full read.
+        } catch (_: java.io.IOException) {
+            return null
+        } finally { rotated?.recycle(); decoded?.recycle(); decoder?.recycle() }
     }
 
     fun cleanOld(context: Context, keep: Set<String>) {

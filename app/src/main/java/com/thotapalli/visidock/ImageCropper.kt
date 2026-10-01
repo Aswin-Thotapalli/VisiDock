@@ -18,16 +18,31 @@ import kotlin.math.*
 
 /** Only a confirmed, perspective-corrected JPEG is passed into ImagePipeline. */
 object ImageCropper {
-    /** Four supported image edges first, foreground segmentation second. Null requests manual framing. */
-    fun detect(bitmap: Bitmap): List<Float>? {
-        val scale = minOf(1f, 320f / maxOf(bitmap.width, bitmap.height))
-        val w = (bitmap.width * scale).roundToInt().coerceAtLeast(2)
-        val h = (bitmap.height * scale).roundToInt().coerceAtLeast(2)
-        val small = Bitmap.createScaledBitmap(bitmap, w, h, true)
-        val pixels = IntArray(w * h)
-        small.getPixels(pixels, 0, w, 0, 0, w, h)
-        if (small !== bitmap) small.recycle()
-        detectEdges(pixels, w, h)?.let { return it }
+    data class Detection(val points:List<Float>, val confidence:Float)
+    private data class Candidate(val points:List<Float>,val confidence:Float)
+
+    fun detect(bitmap:Bitmap):List<Float>?=detectWithConfidence(bitmap)?.points
+
+    /** Compare scales and independent proposals before refining the actual photo boundary. */
+    fun detectWithConfidence(bitmap:Bitmap):Detection? {
+        val candidates=listOf(320,640).flatMap {edge->detectAt(bitmap,edge)}
+        if(candidates.isEmpty()) return null
+        fun area(p:List<Float>)=abs((0..3).sumOf {i->val j=(i+1)%4;(p[i*2]*p[j*2+1]-p[j*2]*p[i*2+1]).toDouble()})/2
+        // An enclosing physical boundary wins over an attractive printed box inside the card.
+        val winner=candidates.maxBy {area(it.points)*(.65+it.confidence*.35)}
+        val refined=refine(bitmap,winner.points) ?: winner.points
+        return Detection(refined,winner.confidence)
+    }
+
+    private fun detectAt(bitmap:Bitmap,maxEdge:Int):List<Candidate> {
+        val scale=minOf(1f,maxEdge.toFloat()/maxOf(bitmap.width,bitmap.height))
+        val w=(bitmap.width*scale).roundToInt().coerceAtLeast(2)
+        val h=(bitmap.height*scale).roundToInt().coerceAtLeast(2)
+        val small=Bitmap.createScaledBitmap(bitmap,w,h,true)
+        val pixels=IntArray(w*h)
+        small.getPixels(pixels,0,w,0,0,w,h)
+        if(small!==bitmap) small.recycle()
+        val proposals=detectEdges(pixels,w,h).toMutableList()
         val border = mutableListOf<Int>()
         for (x in 0 until w) { border += pixels[x]; border += pixels[(h - 1) * w + x] }
         for (y in 1 until h - 1) { border += pixels[y * w]; border += pixels[y * w + w - 1] }
@@ -82,11 +97,17 @@ object ImageCropper {
                 if(area>bestArea) {bestArea=area;best=points}
             }
         }
-        return best
+        best?.let {points->
+            // Color segmentation is only a proposal: every side must also separate
+            // different material. This rejects printed borders on full-frame paper.
+            val evidence=boundaryContrast(pixels,w,h,points)
+            if(evidence>=.62f) proposals+=Candidate(points,evidence)
+        }
+        return proposals
     }
     /** Directional Sobel + bounded Hough search: does not assume the table has one uniform color. */
-    private fun detectEdges(pixels: IntArray, w: Int, h: Int): List<Float>? {
-        if (w < 32 || h < 32) return null
+    private fun detectEdges(pixels: IntArray, w: Int, h: Int): List<Candidate> {
+        if (w < 32 || h < 32) return emptyList()
         val gray = FloatArray(pixels.size) { i ->
             val p = pixels[i]; (((p shr 16) and 255) * .299f + ((p shr 8) and 255) * .587f + (p and 255) * .114f)
         }
@@ -112,19 +133,19 @@ object ImageCropper {
         val votes=FloatArray(bins*stride)
         for (y in 2 until h-2) for (x in 2 until w-2) {
             val i=y*w+x
-            if(magnitude[i]<24f) continue
+            if(magnitude[i]<12f) continue
             val angle=((atan2(gy[i],gx[i])*180/PI).roundToInt()+180)%180
             for(delta in -2..2) {
                 val a=(angle+delta+180)%180
                 val rho=(x*cosine[a]+y*sine[a]).roundToInt()+diagonal
-                votes[a*stride+rho]+=minOf(magnitude[i],100f)/100f
+                votes[a*stride+rho]+=minOf(magnitude[i],48f)/48f
             }
         }
         data class Line(val a:Int,val rho:Double)
         val lines=mutableListOf<Line>()
         // Nonmaximum suppression keeps one hypothesis per physical edge, not dozens of adjacent bins.
         repeat(28) {
-            var peak=-1; var strength=maxOf(18f,minOf(w,h)*.10f)
+            var peak=-1; var strength=maxOf(14f,minOf(w,h)*.065f)
             for(i in votes.indices) if(votes[i]>strength) {peak=i;strength=votes[i]}
             if(peak<0) return@repeat
             val a=peak/stride; val rho=peak%stride-diagonal
@@ -161,11 +182,11 @@ object ImageCropper {
                     val aligned=abs(gx[index]*nx+gy[index]*ny)
                     if(aligned>best && aligned>=magnitude[index]*.75) best=aligned
                 }
-                if(best>=24) found++
+                if(best>=12) found++
             }
             return found/48.0
         }
-        var best:List<Float>?=null;var bestScore=0.0
+        val candidates=mutableListOf<Candidate>()
         for(i in pairs.indices) for(j in i+1 until pairs.size) {
             val (a,b)=pairs[i];val(c,d)=pairs[j]
             if(a==c || a==d || b==c || b==d || separation(lines[a],lines[c])<45) continue
@@ -185,10 +206,93 @@ object ImageCropper {
             if(ratio !in .35..2.85) continue
             val edges=quad.indices.map {k->support(quad[k],quad[(k+1)%4])}
             if(edges.min()<.64 || edges.average()<.78) continue
-            val score=area*edges.average()*edges.min()
-            if(score>bestScore) {bestScore=score;best=points}
+            val material=boundaryContrast(pixels,w,h,points)
+            if(material<.62f) continue
+            candidates+=Candidate(points,(edges.average()*.5+material*.5).toFloat())
         }
-        return best
+        return candidates.sortedByDescending {it.confidence}.take(24)
+    }
+
+    /** A printed rule is a dark ridge with similar paper on BOTH sides, not a material edge. */
+    private fun boundaryContrast(pixels:IntArray,w:Int,h:Int,points:List<Float>):Float {
+        val fractions=(0..3).map {edge->
+            val next=(edge+1)%4
+            val ax=points[edge*2]*(w-1);val ay=points[edge*2+1]*(h-1)
+            val bx=points[next*2]*(w-1);val by=points[next*2+1]*(h-1)
+            val length=hypot(bx-ax,by-ay);val nx=-(by-ay)/length;val ny=(bx-ax)/length
+            var supported=0
+            for(step in 0 until 40) {
+                val t=(step+1f)/41;val x=ax+(bx-ax)*t;val y=ay+(by-ay)*t
+                val distance=maxOf(3f,maxOf(w,h)*.009f)
+                fun sample(sign:Int,multiple:Int):Int=pixels[(y+ny*distance*sign*multiple).roundToInt().coerceIn(0,h-1)*w+(x+nx*distance*sign*multiple).roundToInt().coerceIn(0,w-1)]
+                // A physical step persists across several distances. One sample can
+                // land on a printed rule or table stripe and falsely resemble a step.
+                val inside=(1..3).map {sample(1,it)}
+                val outside=(1..3).map {sample(-1,it)}
+                val channels=(0..2).map {channel->
+                    val a=inside.map {(it shr (channel*8)) and 255}
+                    val b=outside.map {(it shr (channel*8)) and 255}
+                    val differences=a.zip(b).map {(left,right)->left-right}
+                    val persistent=differences.all {it>=7} || differences.all {it<=-7}
+                    val contrast=abs(differences.average())
+                    // The inside band must look like one card surface, not another
+                    // oscillating strip of fabric/wood mistakenly enclosed by lines.
+                    persistent && a.max()-a.min()<=maxOf(14.0,contrast*.65)
+                }
+                if(channels.any {it}) supported++
+            }
+            supported/40f
+        }
+        // A localized glare can erase a short part of one side, but not two whole sides.
+        return if(fractions.min()<.70f) 0f else fractions.average().toFloat()
+    }
+
+    /** Higher-resolution line placement with a bounded search and a slight outward allowance. */
+    private fun refine(bitmap:Bitmap,points:List<Float>):List<Float>? {
+        val scale=minOf(1f,1280f/maxOf(bitmap.width,bitmap.height))
+        val w=(bitmap.width*scale).roundToInt();val h=(bitmap.height*scale).roundToInt()
+        val small=Bitmap.createScaledBitmap(bitmap,w,h,true)
+        val pixels=IntArray(w*h);small.getPixels(pixels,0,w,0,0,w,h)
+        if(small!==bitmap) small.recycle()
+        fun luminance(x:Double,y:Double):Double {
+            val p=pixels[y.roundToInt().coerceIn(0,h-1)*w+x.roundToInt().coerceIn(0,w-1)]
+            return ((p shr 16) and 255)*.299+((p shr 8) and 255)*.587+(p and 255)*.114
+        }
+        data class Line(val nx:Double,val ny:Double,val rho:Double)
+        val lines=(0..3).map {i->
+            val j=(i+1)%4
+            val ax=points[i*2]*(w-1);val ay=points[i*2+1]*(h-1)
+            val bx=points[j*2]*(w-1);val by=points[j*2+1]*(h-1)
+            val length=hypot(bx-ax,by-ay).toDouble();val cx=(ax+bx)/2;val cy=(ay+by)/2
+            val original=atan2((by-ay).toDouble(),(bx-ax).toDouble())
+            var chosen=Line(-sin(original),cos(original),-sin(original)*cx+cos(original)*cy)
+            var best=0.0
+            val radius=maxOf(3,(maxOf(w,h)*.009).roundToInt())
+            for(angleStep in -6..6) {
+                val angle=original+angleStep*PI/720
+                val tx=cos(angle);val ty=sin(angle);val nx=-ty;val ny=tx
+                for(offset in -radius..radius) {
+                    val samples=DoubleArray(40) {sample->
+                        val along=((sample+1.0)/41-.5)*length
+                        val x=cx+tx*along+nx*offset;val y=cy+ty*along+ny*offset
+                        abs(luminance(x+nx*1.3,y+ny*1.3)-luminance(x-nx*1.3,y-ny*1.3)).coerceAtMost(50.0)
+                    }.sorted()
+                    // Trim out both glare gaps and isolated high-contrast text intersections.
+                    val score=samples.subList(8,32).average()/(1+abs(offset)*.008)
+                    if(score>best) {best=score;chosen=Line(nx,ny,nx*cx+ny*cy+offset-.6)}
+                }
+            }
+            chosen
+        }
+        val refined=(0..3).flatMap {i->
+            val a=lines[(i+3)%4];val b=lines[i]
+            val determinant=a.nx*b.ny-a.ny*b.nx
+            if(abs(determinant)<.2) return null
+            val x=(a.rho*b.ny-a.ny*b.rho)/determinant
+            val y=(a.nx*b.rho-a.rho*b.nx)/determinant
+            listOf((x/(w-1)).toFloat(),(y/(h-1)).toFloat())
+        }
+        return refined.takeIf {valid(it) && it.zip(points).all {(a,b)->abs(a-b)<.035f}}
     }
     fun directory(context:Context)=File(context.cacheDir,"crop").apply {mkdirs()}
     suspend fun stage(context:Context,uri:Uri):File {
@@ -213,9 +317,16 @@ object ImageCropper {
         val bounds=BitmapFactory.Options().apply {inJustDecodeBounds=true}
         BitmapFactory.decodeFile(file.path,bounds)
         require(bounds.outWidth>0 && bounds.outHeight>0) {"Could not read this photo."}
+        require(maxEdge in 40..3600)
+        val sourceEdge=maxOf(bounds.outWidth,bounds.outHeight)
         var sample=1
-        while(maxOf(bounds.outWidth,bounds.outHeight)/sample>maxEdge) sample*=2
-        val original=checkNotNull(BitmapFactory.decodeFile(file.path,BitmapFactory.Options().apply {inSampleSize=sample;inPreferredConfig=Bitmap.Config.ARGB_8888})) {"Could not decode this photo."}
+        while(sourceEdge/(sample*2)>=maxEdge) sample*=2
+        // Decode directly to the requested bound. A 4000px photo must not become
+        // 2000px merely because sample sizes are powers of two: tiny text needs it.
+        val original=checkNotNull(BitmapFactory.decodeFile(file.path,BitmapFactory.Options().apply {
+            inSampleSize=sample;inPreferredConfig=Bitmap.Config.ARGB_8888
+            inDensity=sourceEdge/sample;inTargetDensity=minOf(maxEdge,inDensity);inScaled=true
+        })) {"Could not decode this photo."}
         val exif=runCatching {ExifInterface(file)}.getOrNull()
         val transform=Matrix().apply {if(exif?.isFlipped==true) postScale(-1f,1f);postRotate((exif?.rotationDegrees ?: 0).toFloat())}
         return try {Bitmap.createBitmap(original,0,0,original.width,original.height,transform,true).also {if(it!==original) original.recycle()}}
@@ -238,8 +349,8 @@ object ImageCropper {
         require(valid(points)) {"Place the four corners around the card without crossing its edges."}
         val source=FloatArray(8) {i->points[i]*(if(i%2==0) bitmap.width else bitmap.height)}
         fun edge(a:Int,b:Int)=hypot(source[a*2]-source[b*2],source[a*2+1]-source[b*2+1])
-        val width=maxOf(edge(0,1),edge(3,2)).roundToInt().coerceIn(1,2400)
-        val height=maxOf(edge(0,3),edge(1,2)).roundToInt().coerceIn(1,2400)
+        val width=maxOf(edge(0,1),edge(3,2)).roundToInt().coerceIn(1,3600)
+        val height=maxOf(edge(0,3),edge(1,2)).roundToInt().coerceIn(1,3600)
         require(width>=40 && height>=40) {"Select a larger card area."}
         val destination=floatArrayOf(0f,0f,width.toFloat(),0f,width.toFloat(),height.toFloat(),0f,height.toFloat())
         val transform=Matrix();check(transform.setPolyToPoly(source,0,destination,0,4)) {"Could not straighten these corners."}
@@ -249,7 +360,7 @@ object ImageCropper {
         }
     }
     suspend fun crop(context:Context,file:File,points:List<Float>):File {
-        val source=decode(file)
+        val source=decode(file,3600)
         var result:Bitmap?=null
         val output=File(directory(context),"${UUID.randomUUID()}.jpg")
         try {

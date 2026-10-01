@@ -24,17 +24,22 @@ object VisualExtraction {
         If no person is printed, return one company contact without a name.
     """.trimIndent()
 
-    fun parse(response: String, frontText: String, backText: String = ""): VisualProposal {
+    fun parse(response: String, frontText: String, backText: String = "", ocrEvidence: OcrEvidence = OcrEvidence()): VisualProposal {
         require(response.length <= 32_000) { "The visual result was too long. Review the card manually." }
         val clean = response.trim().removePrefix("```json").removePrefix("```").removeSuffix("```").trim()
         val json = JSONObject(clean)
         val array = json.getJSONArray("contacts")
         require(array.length() in 1..12) { "The scan did not produce a usable contact list. Review the card manually." }
-        val warnings = mutableListOf<String>()
+        val warnings = ocrEvidence.reviewWarnings.toMutableList()
         json.optJSONArray("warnings")?.let { values ->
             for (i in 0 until minOf(values.length(), 12)) warnings += values.optString(i).take(300)
         }
         val evidence = normalize(frontText + "\n" + backText)
+        // Conflicting punctuation is not reliable automatic recovery evidence. Keep the
+        // original OCR in rawText, supply both readings to the visual model, and warn.
+        val disputed = ocrEvidence.disagreements.map { it.primary.region.text.trim() }.toSet()
+        val channelEvidence = (frontText + "\n" + backText).lines()
+            .filterNot { it.trim() in disputed }.joinToString("\n")
         val contacts = (0 until array.length()).map { index ->
             val item = array.getJSONObject(index)
             fun field(key: String, limit: Int): String {
@@ -75,10 +80,11 @@ object VisualExtraction {
             val distinctPhones=phones.distinctBy { it.number.filter(Char::isDigit).ifEmpty { it.number } }
             require(distinctPhones.size<=12)
             val channels = ContactChannels.resolve(field("email", 300), field("website", 300),
-                frontText + "\n" + backText, allowUnassigned = array.length() == 1)
+                channelEvidence, allowUnassigned = array.length() == 1)
             warnings += channels.warnings.map { "Person ${index + 1}: $it" }
             val proposedAddress=field("address",1000)
-            val address=withoutUnprintedAddressCompletion(proposedAddress,frontText+"\n"+backText)
+            val address=withoutUnprintedAddressCompletion(proposedAddress,frontText+"\n"+backText,
+                ocrEvidence.disagreements.map { it.alternative.region.text })
             if(address!=proposedAddress) warnings += "Person ${index + 1}: an unprinted address ending was removed. Check the remaining address against the photograph."
             Card(id = UUID.randomUUID().toString(), name = field("name", 200), role = field("role", 300),
                 company = field("company", 300), phone = distinctPhones.firstOrNull()?.number.orEmpty(), phones=distinctPhones, email = channels.email,
@@ -92,7 +98,7 @@ object VisualExtraction {
     /** Remove only a model-added trailing component when the complete remaining
      * address is a contiguous printed span. Never assemble an address from scattered
      * tokens, or discard a suffix that OCR actually contains elsewhere on the card. */
-    private fun withoutUnprintedAddressCompletion(value:String,evidence:String):String {
+    private fun withoutUnprintedAddressCompletion(value:String,evidence:String,alternatives:List<String> = emptyList()):String {
         fun canonical(text:String)=text.lowercase(java.util.Locale.ROOT)
             .replace(Regex("[^\\p{L}\\p{N}]+")," ").trim()
         val printed=" "+canonical(evidence)+" "
@@ -106,7 +112,12 @@ object VisualExtraction {
             // elsewhere in OCR from becoming a replacement address.
             if(prefix.length<12 || !prefix.any(Char::isDigit) || canonical(prefix).split(' ').size<3) continue
             val endings=suffix.split(Regex("[,\\n]")).filter(String::isNotBlank)
-            if(appears(prefix) && endings.isNotEmpty() && endings.none(::appears)) return prefix
+            // A source-backed detail alternative can prevent destructive trimming,
+            // but cannot supply a new address, join fragments, or establish ownership.
+            fun alternativeSupports(text:String):Boolean = canonical(text).let { ending ->
+                ending.isNotEmpty() && alternatives.any { " $ending " in " ${canonical(it)} " }
+            }
+            if(appears(prefix) && endings.isNotEmpty() && endings.none { appears(it) || alternativeSupports(it) }) return prefix
         }
         return value
     }

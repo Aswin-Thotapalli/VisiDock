@@ -4,6 +4,23 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class VisualExtractionTest {
+    @Test fun printedDetailAlternativePreventsAddressSuffixDeletionWithoutInventingAnAddress() {
+        val street="12 Lake Road, Bengaluru 560001"
+        val primary=OcrObservation(OcrRegion(street,.1f,.7f,.9f,.8f))
+        val alternative=primary.copy(region=primary.region.copy(text="$street, India"),pass="detail")
+        val evidence=OcrEvidence(listOf(primary),listOf(OcrDisagreement(primary,alternative)))
+        fun read(address:String,ocrEvidence:OcrEvidence)=VisualExtraction.parse(org.json.JSONObject().put("contacts",
+            org.json.JSONArray().put(org.json.JSONObject().put("name","Mira Sen").put("address",address))).toString(),
+            "Mira Sen\n$street",ocrEvidence=ocrEvidence)
+        assertEquals("$street, India",read("$street, India",evidence).contacts.single().address)
+        assertTrue(read("$street, India",evidence).warnings.any {"differed between OCR" in it})
+        // Without the printed alternative, the original hallucinated-country guard still applies.
+        assertEquals(street,read("$street, India",OcrEvidence()).contacts.single().address)
+        // Alternatives never fill a blank or silently append a suffix themselves.
+        assertEquals("",read("",evidence).contacts.single().address)
+        assertEquals(street,read(street,evidence).contacts.single().address)
+        assertEquals(street,read("$street, Atlantis",evidence).contacts.single().address)
+    }
     @Test fun unprintedCountryCompletionIsRemovedButPrintedMultilineAddressIsPreserved() {
         fun read(address:String,ocr:String)=VisualExtraction.parse(org.json.JSONObject().put("contacts",
             org.json.JSONArray().put(org.json.JSONObject().put("name","Mira Sen").put("address",address))).toString(),"Mira Sen",ocr)

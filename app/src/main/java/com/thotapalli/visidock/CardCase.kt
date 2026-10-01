@@ -24,12 +24,16 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.PathEffect
+import androidx.compose.ui.graphics.asComposePath
+import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
@@ -37,6 +41,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.*
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
@@ -49,7 +54,7 @@ private val CaseRim=Color(0xFF82BCE7)
 /** A bounded, lazy card file. Only the focused card and its immediate neighbours decode images. */
 @Composable internal fun CardCase(
     cards:List<Card>, focusedId:String?, onFocused:(String)->Unit, onOpen:(Card)->Unit,
-    onFavorite:(Card)->Unit, busy:Boolean, modifier:Modifier=Modifier,
+    onFavorite:(Card)->Unit, busy:Boolean, modifier:Modifier=Modifier,ownerName:String="",
     image:@Composable (Card)->Unit,
 ) {
     if(cards.isEmpty()) return
@@ -118,19 +123,17 @@ private val CaseRim=Color(0xFF82BCE7)
             HorizontalPager(state=pager,pageSize=PageSize.Fixed(cardWidth),contentPadding=PaddingValues(horizontal=gutter),pageSpacing=0.dp,beyondViewportPageCount=1,key={cards[it].id},modifier=Modifier.fillMaxWidth().height(270.dp).semantics {contentDescription="Card case";stateDescription="${pager.currentPage+1} of ${cards.size}"}) {page->
                 val card=cards[page]
                 val distance=(pager.currentPage-page)+pager.currentPageOffsetFraction
-                val proximity=1f-abs(distance).coerceIn(0f,1f)
+                val proximity=1f-PhysicalMotion.cardDepth(distance)
                 Box(Modifier.zIndex(proximity).fillMaxWidth().padding(top=228.dp-cardHeight).graphicsLayer {
-                    translationX=distance*cardWidth.toPx()*.48f
-                    translationY=(1f-proximity)*45.dp.toPx()
-                    rotationY=distance.coerceIn(-1.5f,1.5f)*-18f
-                    rotationZ=distance.coerceIn(-1.5f,1.5f)*-3f
-                    scaleX=.88f+.12f*proximity;scaleY=scaleX
-                    cameraDistance=18*density
+                    // Parallel sheets travel through a shallow depth stack.
+                    translationX=distance*cardWidth.toPx()*.90f
+                    translationY=-(1f-proximity)*17.dp.toPx()
+                    scaleX=PhysicalMotion.cardScale(distance);scaleY=scaleX
                 }.semantics(mergeDescendants=true) { if(page!=pager.currentPage) invisibleToUser() }
                     .clickable(enabled=actionable,onClickLabel="Pull out ${card.displayLabel}") {if(page==pager.currentPage) onOpen(card) else browseTo(card.id)}) {
                     // The paper edge stays attached to its card as it moves through the case.
                     Box(Modifier.padding(top=4.dp).fillMaxWidth().height(cardHeight+2.dp).clip(RoundedCornerShape(12.dp)).background(Color(0xFFAABDCF)).materialGrain(alpha=.65f))
-                    Surface(Modifier.fillMaxWidth().height(cardHeight),shape=RoundedCornerShape(12.dp),color=Color(0xFFF0F5FA),tonalElevation=0.dp) {
+                    Surface(Modifier.fillMaxWidth().height(cardHeight).physicalSurface(depthDp=3f+proximity*5f,shape=RoundedCornerShape(12.dp),material=PhysicalMaterial.Paper),shape=RoundedCornerShape(12.dp),color=Color(0xFFF0F5FA),tonalElevation=0.dp) {
                         if(abs(page-pager.currentPage)<=1) image(card)
                     }
                     Canvas(Modifier.fillMaxWidth().height(cardHeight)) {
@@ -145,7 +148,7 @@ private val CaseRim=Color(0xFF82BCE7)
             }) {
                 drawCaseLip()
             }
-            Text("VISIDOCK",Modifier.align(Alignment.BottomCenter).padding(bottom=23.dp),style=MaterialTheme.typography.labelSmall,color=Color(0xFFA9C7DE))
+            CaseInscription(ownerName,Modifier.align(Alignment.BottomCenter).padding(horizontal=42.dp).padding(bottom=25.dp))
         }
         Row(Modifier.fillMaxWidth().padding(horizontal=24.dp),verticalAlignment=Alignment.CenterVertically) {
             DockIconButton(enabled=actionable && pager.settledPage>0,onClick={cards.getOrNull(pager.settledPage-1)?.let {browseTo(it.id)}}) {Icon(Icons.AutoMirrored.Outlined.ArrowBack,"Previous card")}
@@ -166,31 +169,75 @@ private val CaseRim=Color(0xFF82BCE7)
     }
 }
 
-@Composable internal fun EmptyCardCase(onAdd:()->Unit) {
+@Composable internal fun EmptyCardCase(onAdd:()->Unit,ownerName:String="") {
     Column(Modifier.fillMaxWidth(),horizontalAlignment=Alignment.CenterHorizontally) {
         Box(Modifier.fillMaxWidth().height(326.dp)) {
             Canvas(Modifier.fillMaxSize().padding(horizontal=16.dp)) {drawCaseWell()}
             DockOutlinedButton(onClick=onAdd,modifier=Modifier.align(Alignment.TopCenter).padding(top=128.dp),
                 colors=ButtonDefaults.outlinedButtonColors(contentColor=Color(0xFFD5E8F8))) {Text("Add your first card")}
             Canvas(Modifier.align(Alignment.BottomCenter).padding(horizontal=16.dp).fillMaxWidth().height(114.dp)) {drawCaseLip()}
-            Text("VISIDOCK",Modifier.align(Alignment.BottomCenter).padding(bottom=23.dp),style=MaterialTheme.typography.labelSmall,color=Color(0xFFA9C7DE))
+            CaseInscription(ownerName,Modifier.align(Alignment.BottomCenter).padding(horizontal=42.dp).padding(bottom=25.dp))
         }
         Text("Your card case",style=MaterialTheme.typography.titleMedium)
         Text("Scan a card or add its details.",Modifier.padding(top=8.dp,bottom=24.dp),style=MaterialTheme.typography.bodyMedium,color=MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
 
+/** Recessed tooling: upper cavity shadow and lower reflected edge, not white ink. */
+@Composable private fun CaseInscription(ownerName:String,modifier:Modifier=Modifier) {
+    val label=remember(ownerName) {caseInscription(ownerName)}
+    Box(modifier.fillMaxWidth().height(32.dp).semantics {contentDescription=label}.drawWithCache {
+        val paint=android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+            typeface=android.graphics.Typeface.create("sans-serif-medium",android.graphics.Typeface.NORMAL)
+            textSize=14.sp.toPx()
+        }
+        var visibleLabel=label
+        val measured=paint.measureText(label)
+        val minimumSize=12.sp.toPx()
+        if(measured>size.width && measured>0f) {
+            val fittedSize=paint.textSize*size.width/measured
+            if(fittedSize>=minimumSize) paint.textSize=fittedSize
+            else {
+                // Leather tooling has a readable minimum. A long profile name
+                // becomes a personal first-name imprint, never microscopic type.
+                paint.textSize=minimumSize
+                val firstName=ownerName.trim().split(Regex("\\s+")).firstOrNull().orEmpty()
+                visibleLabel=caseInscription(firstName)
+                if(paint.measureText(visibleLabel)>size.width) {
+                    val suffix=if(firstName.endsWith("s",ignoreCase=true)) "’ VisiDock" else "’s VisiDock"
+                    val available=(size.width-paint.measureText(suffix)).coerceAtLeast(0f)
+                    val shortened=android.text.TextUtils.ellipsize(firstName,android.text.TextPaint(paint),available,android.text.TextUtils.TruncateAt.END).toString()
+                    visibleLabel=if(shortened.isBlank()) "VisiDock" else shortened+suffix
+                }
+            }
+        }
+        val x=(size.width-paint.measureText(visibleLabel))/2
+        val y=(size.height-paint.fontMetrics.ascent-paint.fontMetrics.descent)/2
+        val glyphs=android.graphics.Path().apply {paint.getTextPath(visibleLabel,0,visibleLabel.length,x,y,this)}.asComposePath()
+        onDrawBehind {
+            translate(left=.45f.dp.toPx(),top=.85f.dp.toPx()) {drawPath(glyphs,Color(0xFF7BADC6).copy(alpha=.48f))}
+            translate(left=-.3f.dp.toPx(),top=-.65f.dp.toPx()) {drawPath(glyphs,Color(0xFF03162E).copy(alpha=.92f))}
+            drawPath(glyphs,Color(0xFF183B5C))
+            drawPath(glyphs,SurfaceTextures.shell,alpha=.55f)
+        }
+    })
+}
+
 private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawCaseWell() {
                 val top=88.dp.toPx();val bottom=size.height-20.dp.toPx()
                 // Diffuse navy contact shadow, then a bevelled rear shell and recessed well.
                 drawOval(Brush.radialGradient(listOf(CaseInk.copy(alpha=.25f),Color.Transparent),center=Offset(size.width/2,bottom),radius=size.width*.56f),topLeft=Offset(-12.dp.toPx(),bottom-24.dp.toPx()),size=Size(size.width+24.dp.toPx(),48.dp.toPx()))
-                drawRoundRect(Brush.linearGradient(listOf(Color(0xFF315582),CaseInk,Color(0xFF193B65))),topLeft=Offset(0f,top),size=Size(size.width,bottom-top),cornerRadius=CornerRadius(25.dp.toPx()))
+                // Stacked edge paint and gusset give the shell thickness before its face.
+                for(layer in 6 downTo 1) drawRoundRect(Color(0xFF09223E),topLeft=Offset(layer*.28f.dp.toPx(),top+layer*.65f.dp.toPx()),size=Size(size.width-layer*.56f.dp.toPx(),bottom-top),cornerRadius=CornerRadius(25.dp.toPx()))
+                drawRoundRect(Brush.linearGradient(listOf(Color(0xFF355E7B),CaseInk,Color(0xFF193B58))),topLeft=Offset(0f,top),size=Size(size.width,bottom-top),cornerRadius=CornerRadius(25.dp.toPx()))
                 drawRoundRect(SurfaceTextures.shell,topLeft=Offset(0f,top),size=Size(size.width,bottom-top),cornerRadius=CornerRadius(25.dp.toPx()),alpha=.75f)
                 drawRoundRect(Brush.verticalGradient(listOf(Color(0xFF04152E),Color(0xFF14365C))),topLeft=Offset(9.dp.toPx(),top+9.dp.toPx()),size=Size(size.width-18.dp.toPx(),bottom-top-18.dp.toPx()),cornerRadius=CornerRadius(19.dp.toPx()))
                 drawRoundRect(SurfaceTextures.lining,topLeft=Offset(9.dp.toPx(),top+9.dp.toPx()),size=Size(size.width-18.dp.toPx(),bottom-top-18.dp.toPx()),cornerRadius=CornerRadius(19.dp.toPx()),alpha=.65f)
+                // Interior occlusion hugs the rolled rim and fades into the lining.
+                for(layer in 1..5) drawRoundRect(CaseInk.copy(alpha=.045f),topLeft=Offset((9+layer).dp.toPx(),top+(9+layer).dp.toPx()),size=Size(size.width-(18+layer*2).dp.toPx(),bottom-top-(18+layer*2).dp.toPx()),cornerRadius=CornerRadius(19.dp.toPx()),style=Stroke((7-layer).dp.toPx()))
                 drawRoundRect(Brush.linearGradient(listOf(CaseRim.copy(alpha=.75f),CaseRim.copy(alpha=.08f),CaseRim.copy(alpha=.38f))),topLeft=Offset(.5.dp.toPx(),top),size=Size(size.width-1.dp.toPx(),bottom-top),cornerRadius=CornerRadius(25.dp.toPx()),style=Stroke(1.dp.toPx()))
-                // Fine seam lines are fixed material detail, not a continuously running effect.
-                for(i in 1..4) drawLine(Color(0xFF5285AC).copy(alpha=.15f),Offset(10.dp.toPx(),top+(10+i*3).dp.toPx()),Offset(size.width-10.dp.toPx(),top+(10+i*3).dp.toPx()),.5.dp.toPx())
+                // A rolled leather edge catches light only on the upper-left side.
+                drawLine(Color(0xFF88AFC2).copy(alpha=.38f),Offset(25.dp.toPx(),top+3.dp.toPx()),Offset(size.width-25.dp.toPx(),top+3.dp.toPx()),.8f.dp.toPx())
 }
 
 private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawCaseLip() {
@@ -202,11 +249,29 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawCaseLip() {
                     lineTo(size.width,size.height-24.dp.toPx());quadraticBezierTo(size.width,size.height-4.dp.toPx(),size.width-24.dp.toPx(),size.height-4.dp.toPx())
                     lineTo(24.dp.toPx(),size.height-4.dp.toPx());quadraticBezierTo(0f,size.height-4.dp.toPx(),0f,size.height-24.dp.toPx());close()
                 }
-                drawPath(rim,Brush.linearGradient(listOf(Color(0xFF365F8E),Color(0xFF173B67),Color(0xFF0B254B)),start=Offset(0f,0f),end=Offset(size.width,size.height)))
-                drawPath(rim,SurfaceTextures.shell,alpha=.75f)
-                drawPath(rim,Brush.verticalGradient(listOf(CaseRim.copy(alpha=.70f),CaseInk.copy(alpha=.15f))),style=Stroke(1.dp.toPx()))
-                drawLine(Color(0xFF6BA5C4).copy(alpha=.2f),Offset(24.dp.toPx(),size.height-inset-7.dp.toPx()),Offset(size.width-24.dp.toPx(),size.height-inset-7.dp.toPx()),.6.dp.toPx())
-                // A machined cyan accent and its recessed groove locate the opening.
-                drawRoundRect(CaseInk.copy(alpha=.6f),Offset(size.width*.43f,30.dp.toPx()),Size(size.width*.14f,5.dp.toPx()),CornerRadius(3.dp.toPx()))
-                drawRoundRect(Brush.horizontalGradient(listOf(Color(0xFF426B97),Color(0xFF91E3DF),Color(0xFF426B97))),Offset(size.width*.445f,31.dp.toPx()),Size(size.width*.11f,1.dp.toPx()),CornerRadius(1.dp.toPx()))
+                // Multiple painted edge layers make a real silhouette below the face.
+                translate(top=3.dp.toPx()) {drawPath(rim,Color(0xFF061A31))}
+                translate(top=1.5f.dp.toPx()) {drawPath(rim,Color(0xFF27435A))}
+                drawPath(rim,Brush.linearGradient(listOf(Color(0xFF365E79),Color(0xFF234968),Color(0xFF132F4B)),start=Offset(0f,0f),end=Offset(size.width,size.height)))
+                drawPath(rim,SurfaceTextures.shell,alpha=.95f)
+                drawPath(rim,Brush.verticalGradient(listOf(Color(0xFF93B2C2).copy(alpha=.55f),CaseInk.copy(alpha=.60f))),style=Stroke(1.2f.dp.toPx()))
+                // Thread lies in a pressed channel, inset from the burnished edge.
+                val seam=Path().apply {
+                    moveTo(10.dp.toPx(),25.dp.toPx());lineTo(10.dp.toPx(),size.height-27.dp.toPx())
+                    quadraticBezierTo(10.dp.toPx(),size.height-15.dp.toPx(),25.dp.toPx(),size.height-15.dp.toPx())
+                    lineTo(size.width-25.dp.toPx(),size.height-15.dp.toPx())
+                    quadraticBezierTo(size.width-10.dp.toPx(),size.height-15.dp.toPx(),size.width-10.dp.toPx(),size.height-27.dp.toPx())
+                    lineTo(size.width-10.dp.toPx(),25.dp.toPx())
+                }
+                drawPath(seam,CaseInk.copy(alpha=.42f),style=Stroke(2.4f.dp.toPx()))
+                translate(top=.65f.dp.toPx()) {drawPath(seam,Color(0xFF567A90).copy(alpha=.25f),style=Stroke(.7f.dp.toPx()))}
+                drawPath(seam,Color(0xFF8BABB8).copy(alpha=.47f),style=Stroke(.75f.dp.toPx(),pathEffect=PathEffect.dashPathEffect(floatArrayOf(2.5f.dp.toPx(),3.2f.dp.toPx()))))
+                // Tooling along the opening replaces the unrelated luminous hardware bar.
+                val opening=Path().apply {
+                    moveTo(24.dp.toPx(),5.dp.toPx());lineTo(size.width*.33f,5.dp.toPx())
+                    cubicTo(size.width*.4f,5.dp.toPx(),size.width*.4f,notch+5.dp.toPx(),size.width*.5f,notch+5.dp.toPx())
+                    cubicTo(size.width*.6f,notch+5.dp.toPx(),size.width*.6f,5.dp.toPx(),size.width*.67f,5.dp.toPx())
+                    lineTo(size.width-24.dp.toPx(),5.dp.toPx())
+                }
+                drawPath(opening,CaseInk.copy(alpha=.34f),style=Stroke(1.1f.dp.toPx()))
 }

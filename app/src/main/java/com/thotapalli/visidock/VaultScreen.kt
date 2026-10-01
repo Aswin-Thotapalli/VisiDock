@@ -247,7 +247,8 @@ private val destinations = listOf(Destination("Collection", Icons.Outlined.Style
                         else -> false
                     }
                     AnimatedContent(ScreenSnapshot(route,selected,state.draft,state.draftPreview,tab,state.draftBackPreview,state.scanSide,state.busy.orEmpty(),photoBack), contentKey={Triple(it.route,if(it.route=="collection") it.destination else 0,if(it.route=="detail") it.card?.id else null)}, modifier=Modifier.weight(1f), label="Screen transition", transitionSpec={
-                        val photoJourney=initialState.route in listOf("captureReview","reading","editor") && targetState.route in listOf("captureReview","reading","editor")
+                        val photoJourney=(initialState.route in listOf("captureReview","reading","editor") && targetState.route in listOf("captureReview","reading","editor")) ||
+                            (initialState.route in listOf("collection","detail","editor") && targetState.route in listOf("collection","detail","editor") && initialState.route!=targetState.route)
                         val direction=if(targetState.route=="collection" && initialState.route=="collection") {
                             if(targetState.destination>=initialState.destination) 1 else -1
                         } else if(targetState.route=="collection" || (initialState.route=="editor" && targetState.route=="detail")) -1 else 1
@@ -258,7 +259,7 @@ private val destinations = listOf(Destination("Collection", Icons.Outlined.Style
                         "setup" -> SetupScreen()
                         "auth" -> AuthScreen(state.busy, vm::signIn, vm::resetPassword)
                         "captureReview" -> CaptureReviewScreen(state.copy(draft=screen.draft,draftPreview=screen.preview,draftBackPreview=screen.backPreview),vm,{capture=true},{discard=true})
-                        "reading" -> if(screen.draft!=null && screen.preview!=null) ReadingStage(screen.draft,vm,screen.preview,screen.backPreview,screen.scanSide ?: 0,screen.phase,route=="reading",vm::cancelOperation)
+                        "reading" -> if(screen.draft!=null && screen.preview!=null) ReadingStage(screen.draft,vm,screen.preview,screen.backPreview,screen.scanSide ?: 0,screen.phase,route=="reading",regions=state.scanRegions,analysisReady=state.scanAnalysisReady,onPresented=vm::finishScanPresentation,onCancel=vm::cancelOperation)
                         "editor" -> if(screen.draft != null) EditorScreen(state.copy(draft=screen.draft,draftPreview=screen.preview,draftBackPreview=screen.backPreview), vm, onBack={discard=true},onSave={card->receiptCard=card;receiptPreview=screen.preview;receiptPhotoBack=screen.photoBack;vm.save()})
                         "settings" -> SettingsScreen(state, vm)
                         "detail" -> if(screen.card != null) DetailScreen(screen.card, vm, state.busy != null, onBack={vm.select(null)},onCaptureSide={card,back->vm.prepareSideEdit(card,back);capture=back})
@@ -359,14 +360,14 @@ private val destinations = listOf(Destination("Collection", Icons.Outlined.Style
             when(content.phase) {
                 "loading" -> CollectionLoading()
                 "empty" -> if(!favorites && query.isBlank() && !compact) {
-                    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(bottom=100.dp)) {EmptyCardCase(onAdd)}
+                    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(bottom=100.dp)) {EmptyCardCase(onAdd,ownerName=state.session?.displayName.orEmpty())}
                 } else EmptyState(if(query.isNotBlank()) Icons.Outlined.SearchOff else Icons.Outlined.Style,
                     if(query.isNotBlank()) "No matching cards" else if(favorites) "No favorites yet" else "No cards yet",
                     if(query.isNotBlank()) "Try fewer words, a company name or something you wrote in your notes." else if(favorites) "Tap the star on a card to keep it here." else "Scan a visiting card or enter its details.",
                     Modifier.fillMaxSize(),action=if(!favorites && query.isBlank()) onAdd else null,actionLabel="Add your first card")
                 else -> if(!compact) {
                     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(bottom=100.dp)) {
-                        CardCase(content.cards,caseFocusId,onCaseFocus,{onCaseFocus(it.id);vm.select(it)},vm::favorite,state.busy!=null) {card->
+                        CardCase(content.cards,caseFocusId,onCaseFocus,{onCaseFocus(it.id);vm.select(it)},vm::favorite,state.busy!=null,ownerName=state.session?.displayName.orEmpty()) {card->
                             CasePhoto(card,vm)
                         }
                     }
@@ -390,7 +391,7 @@ private val destinations = listOf(Destination("Collection", Icons.Outlined.Style
     val interactions=remember {MutableInteractionSource()}
     val pressed by interactions.collectIsPressedAsState()
     val scale=animateFloatAsState(if(pressed) .978f else 1f,if(pressed) DockMotion.spec(90) else DockMotion.settle(460f,.86f),label="Card lift")
-    Surface(onClick={haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove);onClick()}, interactionSource=interactions, modifier=Modifier.graphicsLayer {scaleX=scale.value;scaleY=scale.value}, color=if(selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface, shape=MaterialTheme.shapes.large) {
+    Surface(onClick={haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove);onClick()}, interactionSource=interactions, modifier=Modifier.graphicsLayer {scaleX=scale.value;scaleY=scale.value}.physicalSurface(depthDp=5f,pressedFraction={(1f-scale.value)/.022f},shape=MaterialTheme.shapes.large,material=PhysicalMaterial.Paper), color=if(selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface, shape=MaterialTheme.shapes.large) {
         Column {
             if(card.imagePath.isNotBlank()) CollectionPhoto(card,vm)
             Row(Modifier.fillMaxWidth().padding(18.dp), verticalAlignment=Alignment.CenterVertically, horizontalArrangement=Arrangement.spacedBy(14.dp)) {
@@ -406,7 +407,7 @@ private val destinations = listOf(Destination("Collection", Icons.Outlined.Style
     }
 }
 
-@Composable private fun cardImageTransition(id:String,back:Boolean=false):Modifier {
+@Composable internal fun cardImageTransition(id:String,back:Boolean=false):Modifier {
     val shared=LocalSharedScope.current
     val screen=LocalScreenScope.current
     val savedAlias=LocalSavedPhotoAlias.current
@@ -414,13 +415,9 @@ private val destinations = listOf(Destination("Collection", Icons.Outlined.Style
     return if(shared!=null && screen!=null) with(shared) {
         Modifier.sharedElement(rememberSharedContentState("card-photo-$identity-$back"),animatedVisibilityScope=screen,boundsTransform={start,end->
             if(!android.animation.ValueAnimator.areAnimatorsEnabled()) tween(0)
-            else keyframes {
-                durationMillis=560
-                start at 0 using FastOutSlowInEasing
-                val middle=androidx.compose.ui.geometry.lerp(start,end,.48f).translate(Offset(0f,-40f))
-                middle at 230 using FastOutSlowInEasing
-                end at 560
-            }
+            // One spring owns bounds throughout the journey. The former pair of
+            // independently eased segments stopped and accelerated at its midpoint.
+            else spring(dampingRatio=1f,stiffness=240f)
         })
     } else Modifier
 }
@@ -433,8 +430,8 @@ private object CardBitmapCache {
     @Synchronized fun put(key:String,value:android.graphics.Bitmap) {cache.put(key,value)}
     @Synchronized fun clear() {cache.evictAll()}
 }
-private data class CardPhotoState(val bitmap:android.graphics.Bitmap?=null,val loading:Boolean=true)
-@Composable private fun cardPhoto(card:Card,vm:VaultViewModel,back:Boolean=false,local:String?=null,retry:Int=0):CardPhotoState {
+internal data class CardPhotoState(val bitmap:android.graphics.Bitmap?=null,val loading:Boolean=true)
+@Composable internal fun cardPhoto(card:Card,vm:VaultViewModel,back:Boolean=false,local:String?=null,retry:Int=0):CardPhotoState {
     val account=LocalPhotoAccount.current
     val source=local ?: if(back) card.backImagePath else card.imagePath
     val key="$account|${if(local!=null) "local" else card.id}|$back|$source"
@@ -961,81 +958,11 @@ private data class CardPhotoState(val bitmap:android.graphics.Bitmap?=null,val l
         }
         Surface(tonalElevation=2.dp) {
             Column(Modifier.fillMaxWidth().navigationBarsPadding().padding(horizontal=20.dp,vertical=12.dp),horizontalAlignment=Alignment.CenterHorizontally) {
-                DockButton(onClick=vm::readCapturedSides,enabled=!busy && state.draftPreview!=null,modifier=Modifier.fillMaxWidth().heightIn(min=56.dp)) {
+                DockButton(onClick={vm.readCapturedSides(waitForPresentation=true)},enabled=!busy && state.draftPreview!=null,modifier=Modifier.fillMaxWidth().heightIn(min=56.dp)) {
                     Icon(Icons.Outlined.DocumentScanner,null,Modifier.size(20.dp));Spacer(Modifier.width(10.dp));Text(if(hasBack) "Read both sides" else "Continue with front")
                 }
                 DockTextButton(onClick=vm::reviewCapturedManually,enabled=!busy) {Text("Enter details instead")}
             }
-        }
-    }
-}
-
-@Composable internal fun ReadingStage(card:Card,vm:VaultViewModel,front:String,back:String?,side:Int,phase:String,active:Boolean,onCancel:()->Unit) {
-    // Outgoing route content stays visible during the shared-photo handoff, but must
-    // never retain a BackHandler or cancel a new operation underneath it.
-    BackHandler(enabled=active,onBack=onCancel)
-    val cancel={if(active) onCancel()}
-    // Same bounded cache as capture review/editor; no bitmap is recycled while an
-    // outgoing shared layer can still reference it. Local keys survive new draft IDs.
-    val frontPhoto=cardPhoto(card,vm,false,front).bitmap
-    val backPhoto=if(back!=null) cardPhoto(card,vm,true,back).bitmap else null
-    val enabled=android.animation.ValueAnimator.areAnimatorsEnabled()
-    val angle=animateFloatAsState(if(back!=null && side>=1) 180f else 0f,if(enabled) DockMotion.settle(240f,.88f) else snap(),label="Scan side turn")
-    val shownBack by remember {derivedStateOf {angle.value>90f}}
-    val position=if(enabled) {
-        val transition=rememberInfiniteTransition(label="Reading activity")
-        transition.animateFloat(-.12f,1.12f,infiniteRepeatable(tween(2200,easing=LinearEasing),RepeatMode.Restart),label="Reading light")
-    } else remember {mutableFloatStateOf(.5f)}
-    val accent=MaterialTheme.colorScheme.primary
-    Surface(Modifier.fillMaxSize().testTag("reading-stage"),color=MaterialTheme.colorScheme.background) {
-        Column(Modifier.fillMaxSize().safeDrawingPadding().verticalScroll(rememberScrollState()).padding(28.dp),verticalArrangement=Arrangement.Center,horizontalAlignment=Alignment.CenterHorizontally) {
-            Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically) {
-                Icon(Icons.Outlined.DocumentScanner,null,tint=accent)
-                Spacer(Modifier.width(10.dp));Text("Reading card",style=MaterialTheme.typography.titleMedium)
-                Spacer(Modifier.weight(1f));DockIconButton(onClick=cancel,enabled=active) {Icon(Icons.Outlined.Close,"Cancel reading")}
-            }
-            Spacer(Modifier.height(48.dp))
-            // The halo remains in the screen plane: projecting a native shadow through
-            // a 180-degree graphicsLayer produces a triangular shadow on some renderers.
-            Box(Modifier.widthIn(max=600.dp).fillMaxWidth().drawBehind {
-                val radius=size.width*.62f
-                val glowCenter=Offset(size.width/2,size.height*.56f)
-                drawRect(androidx.compose.ui.graphics.Brush.radialGradient(listOf(accent.copy(alpha=.17f),Color.Transparent),center=glowCenter,radius=radius),topLeft=glowCenter-Offset(radius,radius),size=androidx.compose.ui.geometry.Size(radius*2,radius*2))
-            }) {
-            Box(cardImageTransition(front,shownBack).fillMaxWidth().aspectRatio(1.65f).graphicsLayer {
-                rotationY=angle.value
-                val edge=kotlin.math.sin(Math.toRadians(angle.value.toDouble())).toFloat()
-                translationY=-edge*12*density;scaleX=1f+edge*.035f;scaleY=scaleX
-                cameraDistance=18*density;shape=androidx.compose.foundation.shape.RoundedCornerShape(16.dp);clip=true
-            }.background(MaterialTheme.colorScheme.surfaceContainer)) {
-                Box(Modifier.fillMaxSize().graphicsLayer {rotationY=if(shownBack) 180f else 0f}) {
-                    (if(shownBack) backPhoto else frontPhoto)?.let {Image(it.asImageBitmap(),if(shownBack) "Back of card being read" else "Front of card being read",Modifier.fillMaxSize(),contentScale=ContentScale.Fit)}
-                    Canvas(Modifier.fillMaxSize().testTag("reading-light")) {
-                        val y=size.height*position.value
-                        val light=Color(0xFF9AE7FF)
-                        // A broad blue wake, narrow cyan bloom and bright core read as
-                        // one optical sweep. These are activity light, not fabricated OCR boxes.
-                        drawRect(androidx.compose.ui.graphics.Brush.verticalGradient(listOf(Color.Transparent,accent.copy(alpha=.10f),light.copy(alpha=.32f),Color.Transparent),startY=y-size.height*.34f,endY=y+10.dp.toPx()))
-                        drawLine(light.copy(alpha=.15f),Offset(0f,y),Offset(size.width,y),12.dp.toPx())
-                        drawLine(light.copy(alpha=.35f),Offset(0f,y),Offset(size.width,y),4.dp.toPx())
-                        drawLine(Color(0xFFE0F8FF),Offset(0f,y),Offset(size.width,y),1.dp.toPx())
-                        // The beam catches the physical card edges as it passes.
-                        listOf(1.dp.toPx(),size.width-1.dp.toPx()).forEach {x->
-                            drawLine(light,Offset(x,y-9.dp.toPx()),Offset(x,y+9.dp.toPx()),2.dp.toPx())
-                        }
-                    }
-                }
-            }
-            }
-            Spacer(Modifier.height(36.dp))
-            AnimatedContent(side,modifier=Modifier.fillMaxWidth(),label="Reading phase",transitionSpec={
-                (fadeIn(DockMotion.spec(180)) togetherWith fadeOut(DockMotion.spec(100))).using(SizeTransform(clip=false))
-            }) {stage->
-                Text(when(stage) {0->"Reading the front";1->"Reading the back";else->if(back!=null) "Organizing details from both sides" else "Organizing the details"},modifier=Modifier.fillMaxWidth(),textAlign=androidx.compose.ui.text.style.TextAlign.Center,style=MaterialTheme.typography.titleLarge)
-            }
-            Spacer(Modifier.height(12.dp));Text(phase,style=MaterialTheme.typography.bodyMedium,color=MaterialTheme.colorScheme.onSurfaceVariant,textAlign=androidx.compose.ui.text.style.TextAlign.Center,modifier=Modifier.semantics {liveRegion=LiveRegionMode.Polite})
-            Spacer(Modifier.height(8.dp));Text("Processed privately on your phone",style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
-            Spacer(Modifier.height(16.dp));DockTextButton(onClick=cancel,enabled=active) {Text("Cancel reading")}
         }
     }
 }

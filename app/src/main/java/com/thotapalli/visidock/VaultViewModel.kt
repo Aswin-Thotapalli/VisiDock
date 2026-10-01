@@ -30,6 +30,7 @@ data class VaultState(
     val savedEvent: Long = 0, val savedName: String = "",
     val cropPath:String?=null,val cropBack:Boolean=false,
     val captureReview:Boolean=false, val scanSide:Int?=null, val scanPreview:String?=null,
+    val scanRegions:List<OcrRegion> = emptyList(), val scanAnalysisReady:Boolean=false,
     val correctionHistory:List<CorrectionActivity> = emptyList()
 )
 
@@ -43,6 +44,8 @@ class VaultViewModel(application: Application, private val saved: SavedStateHand
     private val searchEngine = SemanticSearch(application)
     private val visualModel = VisualModel(application)
     private var operationJob: Job? = null
+    private var scanPresentation: kotlinx.coroutines.CompletableDeferred<Unit>? = null
+    fun finishScanPresentation() {scanPresentation?.complete(Unit)}
     private var pendingPeople = emptyList<Card>()
     suspend fun search(cards: List<Card>, query: String) = searchEngine.search(cards, query)
     private fun update(block: (VaultState) -> VaultState) { mutable.atomicUpdate(block) }
@@ -105,7 +108,7 @@ class VaultViewModel(application: Application, private val saved: SavedStateHand
             catch (e: kotlinx.coroutines.TimeoutCancellationException) { update { it.copy(error="This took too long. Your draft is still available. Retry the operation, or review the card manually. Pending cloud cleanup can be retried in Settings.") } }
             catch (e: CancellationException) { throw e }
             catch (e: Exception) { update { it.copy(error=e.localizedMessage ?: "Something went wrong. Please try again.") } }
-            finally { update { it.copy(busy=null,scanSide=null,scanPreview=null) } }
+            finally { scanPresentation?.cancel();scanPresentation=null;update { it.copy(busy=null,scanSide=null,scanPreview=null) } }
         }
     }
     fun downloadVisualModel() = operation("Downloading visual reading…", 3_600_000) {
@@ -113,6 +116,7 @@ class VaultViewModel(application: Application, private val saved: SavedStateHand
         update { it.copy(visualModelReady=true, message="Visual reading is ready. Card analysis stays on this device.") }
     }
     private fun scanRegions()=OcrRegions.decode(saved["frontRegions"])+OcrRegions.decode(saved["backRegions"])
+    private fun scanEvidence()=OcrEvidence.combine(OcrEvidence.decode(saved["frontEvidence"]),OcrEvidence.decode(saved["backEvidence"]))
     private fun learning()=CorrectionMemory(getApplication(),checkNotNull(repository?.session()).uid)
     fun setLearning(enabled:Boolean) { if(state.value.busy!=null) return; learning().setEnabled(enabled); update {it.copy(learningEnabled=enabled)} }
     fun inspectLearning() = operation("Opening learning history…") {
@@ -240,11 +244,12 @@ class VaultViewModel(application: Application, private val saved: SavedStateHand
         listOf("original", "preview", "camera", "backOriginal", "backPreview", "cropSource").forEach { key -> saved.get<String>(key)?.let { File(it).delete() }; saved[key] = null }
         saved["cropBack"] = null
         saved["captureReview"]=null;saved["editingImages"]=null;saved["imageEditBack"]=null;saved["imageRevision"]=null;saved["pendingImageRevision"]=null
-        update {it.copy(cropPath=null,cropBack=false,captureReview=false,scanSide=null,scanPreview=null)}
+        update {it.copy(cropPath=null,cropBack=false,captureReview=false,scanSide=null,scanPreview=null,scanRegions=emptyList(),scanAnalysisReady=false)}
         saved["mime"] = null
         saved["backMime"] = null
         saved["draftOwner"] = null
         setPending(emptyList()); setWarnings(emptyList()); saved["scanProposals"]=null; saved["frontRegions"]=null; saved["backRegions"]=null; saved["sourceScanId"]=null
+        saved["frontEvidence"]=null;saved["backEvidence"]=null
     }
     fun cameraFile(): File = File(getApplication<Application>().cacheDir, "camera/${UUID.randomUUID()}.jpg").apply {
         saved.get<String>("camera")?.let { File(it).delete() }
@@ -291,25 +296,38 @@ class VaultViewModel(application: Application, private val saved: SavedStateHand
         saved.get<String>(original)?.let {File(it).delete()};saved.get<String>(preview)?.let {File(it).delete()}
         saved[original]=files.original.path;saved[preview]=files.preview.path;saved[if(back) "backMime" else "mime"]=files.mime
         saved[if(back) "backRegions" else "frontRegions"]=OcrRegions.encode(files.regions.map {it.copy(side=if(back) 1 else 0)})
+        saved[if(back) "backEvidence" else "frontEvidence"]=files.evidence.encode()
         update {it.copy(draftPreview=if(back) it.draftPreview else files.preview.path,draftBackPreview=if(back) files.preview.path else it.draftBackPreview)}
     }
     private fun preparedSide(back:Boolean):ScanFiles? {
         val original=saved.get<String>(if(back) "backOriginal" else "original") ?: return null
         return ScanFiles(File(original),File(checkNotNull(saved.get<String>(if(back) "backPreview" else "preview"))),checkNotNull(saved.get<String>(if(back) "backMime" else "mime")),"")
     }
-    fun readCapturedSides() = operation("Reading front…",180_000) {
+    fun readCapturedSides(waitForPresentation:Boolean=false) = operation("Reading front…",180_000) {
         val front=checkNotNull(preparedSide(false)) {"Add the front of the card first."}
         val back=preparedSide(true)
         saved["captureReview"]=true
-        update {it.copy(scanSide=0,scanPreview=front.preview.path)}
+        scanPresentation=if(waitForPresentation) kotlinx.coroutines.CompletableDeferred() else null
+        update {it.copy(scanSide=0,scanPreview=front.preview.path,scanRegions=emptyList(),scanAnalysisReady=false)}
         val frontRead=ImagePipeline.read(getApplication(),front)
         saved["frontRegions"]=OcrRegions.encode(frontRead.regions)
+        saved["frontEvidence"]=frontRead.evidence.encode()
+        update {it.copy(scanRegions=frontRead.regions)}
         val backRead=back?.let {
             update {state->state.copy(busy="Reading back…",scanSide=1,scanPreview=it.preview.path)}
-            ImagePipeline.read(getApplication(),it).also {result->saved["backRegions"]=OcrRegions.encode(result.regions.map {region->region.copy(side=1)})}
+            ImagePipeline.read(getApplication(),it).also {result->
+                val regions=result.regions.map {region->region.copy(side=1)}
+                saved["backRegions"]=OcrRegions.encode(regions)
+                saved["backEvidence"]=result.evidence.encode()
+                update {state->state.copy(scanRegions=frontRead.regions+regions)}
+            }
         }
         update {it.copy(busy="Understanding your card…",scanSide=2,scanPreview=back?.preview?.path ?: front.preview.path)}
         analyzePrepared(frontRead.text,backRead?.text.orEmpty())
+        update {it.copy(scanAnalysisReady=true,busy="Details ready for review")}
+        // Computation runs independently of the optical presentation. Only a fast
+        // result waits for the already-running handoff; backgrounded UI is bounded.
+        scanPresentation?.let {kotlinx.coroutines.withTimeoutOrNull(20_000) {it.await()}}
         saved["captureReview"]=false
         update {it.copy(captureReview=false)}
     }
@@ -319,7 +337,7 @@ class VaultViewModel(application: Application, private val saved: SavedStateHand
         val source=saved.get<String>("sourceScanId") ?: UUID.randomUUID().toString().also {saved["sourceScanId"]=it}
         val suggestion=CardLogic.extract(draft.rawText+"\n"+draft.backRawText).copy(id=draft.id,name="",
             rawText=draft.rawText,backRawText=draft.backRawText,sourceScanId=source)
-        setDraft(suggestion);setPending(emptyList())
+        setDraft(suggestion);setPending(emptyList());setWarnings(scanEvidence().reviewWarnings)
         saved["scanProposals"]=JSONObject(mapOf(suggestion.id to JSONObject(suggestion.record()+("id" to suggestion.id)))).toString()
         saved["captureReview"]=false
         update {it.copy(captureReview=false,error=null)}
@@ -336,17 +354,14 @@ class VaultViewModel(application: Application, private val saved: SavedStateHand
             saved.get<String>("backOriginal")?.let { File(it).delete() }; saved.get<String>("backPreview")?.let { File(it).delete() }
             saved["backOriginal"]=files.original.path; saved["backPreview"]=files.preview.path; saved["backMime"]=files.mime; saved["backRegions"]=OcrRegions.encode(files.regions.map {it.copy(side=1)})
         } else { saved["original"] = files.original.path; saved["preview"] = files.preview.path; saved["mime"] = files.mime; saved["frontRegions"]=OcrRegions.encode(files.regions) }
+        saved[if(back) "backEvidence" else "frontEvidence"]=files.evidence.encode()
         update { it.copy(busy="Identifying the details on your device…", draftPreview=if(back) it.draftPreview else files.preview.path) }
         val previous=state.value.draft
         val frontText=if(back) previous?.rawText.orEmpty() else files.text
         val backText=if(back) files.text else ""
         analyzePrepared(frontText,backText)
     }
-    fun readPhotosAgain() = operation("Identifying the details on your device…",180_000) {
-        val draft=checkNotNull(state.value.draft)
-        update {it.copy(scanSide=2,scanPreview=it.draftBackPreview ?: it.draftPreview)}
-        analyzePrepared(draft.rawText,draft.backRawText)
-    }
+    fun readPhotosAgain() = readCapturedSides(waitForPresentation=true)
     private suspend fun analyzePrepared(frontText:String,backText:String) {
         val front=File(checkNotNull(saved.get<String>("preview")))
         val reverse=saved.get<String>("backPreview")?.let(::File)
@@ -358,7 +373,7 @@ class VaultViewModel(application: Application, private val saved: SavedStateHand
             try {
                 val regions=scanRegions()
                 val hints=withContext(Dispatchers.IO) {runCatching {learning().hints(frontText+"\n"+backText,regions)}.getOrDefault("")}
-                visualModel.extract(front,reverse,frontText,backText,hints)
+                visualModel.extract(front,reverse,frontText,backText,hints,scanEvidence())
             }
             catch(e: CancellationException) { throw e }
             catch(e: Exception) { VisualProposal(listOf(CardLogic.extract(frontText+"\n"+backText).copy(name="",rawText=frontText.take(12000),backRawText=backText.take(12000))),listOf(if(e is VisualReadingUnavailableException) e.message.orEmpty() else "Visual reading could not finish on this device. Check the photographs and enter the details, or retry.")) }
@@ -366,7 +381,7 @@ class VaultViewModel(application: Application, private val saved: SavedStateHand
         val sourceScanId=saved.get<String>("sourceScanId") ?: UUID.randomUUID().toString().also {saved["sourceScanId"]=it}
         val people=result.contacts.map { it.copy(id=UUID.randomUUID().toString(),sourceScanId=sourceScanId) }
         saved["scanProposals"]=JSONObject(people.associate {it.id to JSONObject(it.record()+("id" to it.id))}).toString()
-        setPending(people.drop(1)); setWarnings(result.warnings)
+        setPending(people.drop(1)); setWarnings((result.warnings+scanEvidence().reviewWarnings).distinct())
         setDraft(people.first())
         update { it.copy(draftPreview=front.path,draftBackPreview=reverse?.path) }
     }

@@ -95,7 +95,7 @@ class VisualModel(private val context: Context) {
         check(partial.renameTo(model)) { "Could not finish installing visual reading." }
     }
 
-    suspend fun extract(front: File, back: File?, frontText: String, backText: String, localHints: String = ""): VisualProposal = withContext(Dispatchers.Default) {
+    suspend fun extract(front: File, back: File?, frontText: String, backText: String, localHints: String = "", ocrEvidence: OcrEvidence = OcrEvidence()): VisualProposal = withContext(Dispatchers.Default) {
         // The runtime's visual budget is global; serialize engines as well as its configuration.
         extractionMutex.withLock {
         requireSupportedDevice()
@@ -105,13 +105,13 @@ class VisualModel(private val context: Context) {
         val preferences=context.getSharedPreferences("visual-runtime",Context.MODE_PRIVATE)
         val cpuKey="cpu-vision-0.17.1-$SHA256-${android.os.Build.FINGERPRINT.hashCode()}"
         if(preferences.getBoolean(cpuKey,false)) {
-            return@withLock infer(front,back,frontText,backText,localHints,true)
+            return@withLock infer(front,back,frontText,backText,localHints,true,ocrEvidence)
         }
-        try { infer(front,back,frontText,backText,localHints,false) }
+        try { infer(front,back,frontText,backText,localHints,false,ocrEvidence) }
         catch(e: LiteRtLmJniException) {
             currentCoroutineContext().ensureActive()
             // Some devices cannot compile this encoder for their GPU. Retry locally on CPU.
-            val result=infer(front,back,frontText,backText,localHints,true)
+            val result=infer(front,back,frontText,backText,localHints,true,ocrEvidence)
             preferences.edit().putBoolean(cpuKey,true).apply()
             result
         }
@@ -119,7 +119,7 @@ class VisualModel(private val context: Context) {
     }
 
     @OptIn(ExperimentalApi::class)
-    private suspend fun infer(front: File, back: File?, frontText: String, backText: String, localHints: String, cpuVision: Boolean): VisualProposal {
+    private suspend fun infer(front: File, back: File?, frontText: String, backText: String, localHints: String, cpuVision: Boolean, ocrEvidence: OcrEvidence): VisualProposal {
         currentCoroutineContext().ensureActive()
         val imageCount=if(back==null) 1 else 2
         // A changed signature needs a cold engine, so it must pass the cold budget.
@@ -172,6 +172,7 @@ class VisualModel(private val context: Context) {
                 val boundedFront=VisualExtraction.boundedOcr(frontText,frontBudget)
                 val boundedBack=if(back==null) "" else VisualExtraction.boundedOcr(backText,1000)
                 contents += Content.Text("OCR evidence (may contain errors):\nFRONT:\n$boundedFront\nBACK:\n$boundedBack")
+                ocrEvidence.modelContext().takeIf(String::isNotBlank)?.let { contents += Content.Text(it) }
                 if(localHints.isNotBlank()) contents += Content.Text(localHints.take(600))
                 val result = StringBuilder()
                 var completeJson:String?=null
@@ -192,7 +193,7 @@ class VisualModel(private val context: Context) {
                 }
                 currentCoroutineContext().ensureActive()
                 stage("json_complete")
-                VisualExtraction.parse(completeJson ?: result.toString(), frontText, backText)
+                VisualExtraction.parse(completeJson ?: result.toString(), frontText, backText, ocrEvidence)
             }
             }
             stage("completed")

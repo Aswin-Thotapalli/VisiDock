@@ -67,6 +67,56 @@ class ImageCropperTest {
         }
     }
 
+    @Test fun difficultPhotosKeepTheOuterBoundaryAndPrintedContent() {
+        val landscape=listOf(.13f,.22f,.86f,.15f,.90f,.78f,.10f,.84f)
+        val portrait=listOf(.30f,.08f,.69f,.13f,.75f,.90f,.24f,.84f)
+        for(kind in listOf("low contrast","glare","inner frame","portrait","textured")) {
+            val expected=if(kind=="portrait") portrait else landscape
+            val image=Bitmap.createBitmap(1200,900,Bitmap.Config.ARGB_8888)
+            val canvas=Canvas(image)
+            canvas.drawColor(if(kind=="low contrast") Color.rgb(209,209,205) else Color.rgb(82,74,63))
+            if(kind=="textured") for(x in 0..1200 step 11) {
+                canvas.drawLine(x.toFloat(),0f,x+170f,900f,Paint().apply {color=Color.rgb(112+x%13,96,77);strokeWidth=3f})
+            }
+            val shape=Path().apply {
+                moveTo(expected[0]*1200,expected[1]*900)
+                for(i in 1..3) lineTo(expected[i*2]*1200,expected[i*2+1]*900)
+                close()
+            }
+            canvas.drawPath(shape,Paint(Paint.ANTI_ALIAS_FLAG).apply {color=if(kind=="low contrast") Color.rgb(224,224,221) else Color.rgb(235,238,231)})
+            canvas.save();canvas.clipPath(shape)
+            if(kind=="inner frame") canvas.drawRect(230f,275f,920f,625f,Paint().apply {color=Color.rgb(21,40,75);style=Paint.Style.STROKE;strokeWidth=8f})
+            canvas.drawText("MIRA DAS",if(kind=="portrait") 385f else 245f,350f,Paint().apply {color=Color.rgb(21,40,75);textSize=42f})
+            canvas.drawText("mira@example.test",if(kind=="portrait") 385f else 245f,415f,Paint().apply {color=Color.rgb(21,40,75);textSize=27f})
+            // The highlight crosses only part of an outer edge; it must not become the crop boundary.
+            if(kind=="glare") canvas.drawCircle(1020f,250f,86f,Paint().apply {color=Color.WHITE})
+            canvas.restore()
+            try {
+                val result=ImageCropper.detectWithConfidence(image)
+                assertNotNull("Missing boundary for $kind",result)
+                val actual=result!!.points
+                assertTrue("Confidence must be explicit and bounded",result.confidence in 0f..1f)
+                expected.zip(actual).forEachIndexed {index,(wanted,found)->
+                    assertEquals("$kind corner coordinate $index",wanted,found,.025f)
+                }
+                // Area catches a convincing but wrong inner decorative frame.
+                fun area(p:List<Float>)=kotlin.math.abs((0..3).sumOf {i->val j=(i+1)%4;(p[i*2]*p[j*2+1]-p[j*2]*p[i*2+1]).toDouble()})/2
+                assertTrue("$kind must preserve the whole card",area(actual)/area(expected) in .94..1.06)
+            } finally {image.recycle()}
+        }
+    }
+
+    @Test fun printedBoxOnFullFramePaperIsNotACardBoundary() {
+        val image=Bitmap.createBitmap(1000,700,Bitmap.Config.ARGB_8888)
+        Canvas(image).apply {
+            drawColor(Color.rgb(238,238,232))
+            drawRect(150f,120f,850f,580f,Paint().apply {color=Color.rgb(20,40,80);style=Paint.Style.STROKE;strokeWidth=7f})
+            drawText("PRINTED FRAME",240f,300f,Paint().apply {color=Color.rgb(20,40,80);textSize=35f})
+        }
+        try {assertNull("Same material on both sides of a printed border is not a physical card edge",ImageCropper.detect(image))}
+        finally {image.recycle()}
+    }
+
     @Test fun openEdgesAndBackgroundTextureDoNotFormAnAutomaticCard() {
         val image=Bitmap.createBitmap(640,480,Bitmap.Config.ARGB_8888)
         Canvas(image).apply {
@@ -129,6 +179,25 @@ class ImageCropperTest {
             assertFalse(ImageCropper.valid(listOf(Float.NaN,0f,1f,0f,1f,1f,0f,1f)))
             assertFalse(ImageCropper.valid(listOf(.1f,.1f,.11f,.1f,.11f,.11f,.1f,.11f)))
         } finally {output.recycle();image.recycle()}
+    }
+
+    @Test fun correctedOriginalRetainsBoundedSmallPrintResolution() {
+        val context=InstrumentationRegistry.getInstrumentation().targetContext
+        val file=File(context.cacheDir,"crop-resolution-test.jpg")
+        val source=Bitmap.createBitmap(4000,2600,Bitmap.Config.ARGB_8888)
+        Canvas(source).apply {
+            drawColor(Color.WHITE)
+            drawText("small.print@example.test",650f,1100f,Paint().apply {color=Color.rgb(22,40,70);textSize=35f})
+        }
+        file.outputStream().use {source.compress(Bitmap.CompressFormat.JPEG,94,it)};source.recycle()
+        val decoded=ImageCropper.decode(file,3600)
+        try {
+            assertEquals("Do not silently halve the source to 2000px",3600,decoded.width)
+            assertEquals(2340,decoded.height)
+            val corrected=ImageCropper.warp(decoded,listOf(.1f,.2f,.9f,.2f,.9f,.8f,.1f,.8f))
+            try {assertEquals(2880,corrected.width);assertEquals(1404,corrected.height)}
+            finally {corrected.recycle()}
+        } finally {decoded.recycle();file.delete()}
     }
 
     @Test fun uprightDecodeAppliesExifBeforeCornerCoordinates() {

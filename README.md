@@ -83,6 +83,8 @@ These start isolated Firestore and Storage emulators using the `demo-visidock` p
 - `PRODUCT.md`: confirmed product direction and ownership.
 - `DESIGN.md`: palette, type, components, responsive behavior and motion contract.
 - `docs/Initial-audit.md`: original ZIP assessment, retained as history.
+- `docs/Physical-system.md`: material, lighting, pressure and spring implementation.
+- `docs/Physical-interface-contract.md`: complete visual, motion, animation and physics acceptance inventory.
 - `docs/Verification.md`: latest executed checks and remaining gaps.
 
 Release signing, publishing, Play policy review, billing/service ownership and real-device acceptance testing remain with the owner. This is a development build, not a production security certification.

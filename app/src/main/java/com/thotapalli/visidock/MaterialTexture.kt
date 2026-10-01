@@ -8,9 +8,50 @@ import androidx.compose.ui.graphics.ShaderBrush
 import androidx.compose.ui.graphics.TileMode
 import androidx.compose.ui.graphics.asImageBitmap
 import kotlin.random.Random
+import kotlin.math.*
 
 /** Fixed, seamless material samples: no random work or bitmap allocation on animation frames. */
 internal object SurfaceTextures {
+    /** Pebble height field, lit from the same upper-left source as the case bevel.
+     * The repeat is periodic in both axes, so no square bitmap seams appear. */
+    private fun leather():ShaderBrush {
+        val side=256
+        val random=Random(341)
+        val cells=16
+        val cell=side.toFloat()/cells
+        val seeds=Array(cells*cells) {i->
+            floatArrayOf((i%cells+.20f+random.nextFloat()*.60f)*cell,(i/cells+.20f+random.nextFloat()*.60f)*cell)
+        }
+        val heights=FloatArray(side*side)
+        for(y in 0 until side) for(x in 0 until side) {
+            val gx=x/cell.toInt();val gy=y/cell.toInt()
+            var nearest=Float.MAX_VALUE
+            var second=Float.MAX_VALUE
+            for(dy in -1..1) for(dx in -1..1) {
+                val sx=gx+dx;val sy=gy+dy
+                val seed=seeds[Math.floorMod(sy,cells)*cells+Math.floorMod(sx,cells)]
+                val px=seed[0]+(sx-Math.floorMod(sx,cells))*cell
+                val py=seed[1]+(sy-Math.floorMod(sy,cells))*cell
+                val distance=hypot(x-px,y-py)
+                if(distance<nearest) {second=nearest;nearest=distance} else if(distance<second) second=distance
+            }
+            // Narrow valleys separate rounded pebbles. Fine pore variation is low
+            // amplitude so the visible surface is relief, not television noise.
+            heights[y*side+x]=(1f-exp(-(second-nearest)*.55f))*.85f+random.nextFloat()*.035f
+        }
+        val pixels=IntArray(side*side)
+        for(y in 0 until side) for(x in 0 until side) {
+            val left=heights[y*side+Math.floorMod(x-1,side)]
+            val right=heights[y*side+(x+1)%side]
+            val above=heights[Math.floorMod(y-1,side)*side+x]
+            val below=heights[((y+1)%side)*side+x]
+            val light=((right-left)*.6f+(below-above)*.8f).coerceIn(-1f,1f)
+            val valley=(1f-heights[y*side+x]).coerceIn(0f,1f)
+            val alpha=((abs(light)*52f)+valley*12f).toInt().coerceIn(0,58)
+            pixels[y*side+x]=(alpha shl 24) or if(light>0) 0x00CAE0EC else 0x00021931
+        }
+        return ShaderBrush(ImageShader(Bitmap.createBitmap(pixels,side,side,Bitmap.Config.ARGB_8888).asImageBitmap(),TileMode.Repeated,TileMode.Repeated))
+    }
     private fun sample(seed:Int,lining:Boolean):ShaderBrush {
         val random=Random(seed)
         val size=128
@@ -24,7 +65,7 @@ internal object SurfaceTextures {
         val bitmap=Bitmap.createBitmap(pixels,size,size,Bitmap.Config.ARGB_8888).asImageBitmap()
         return ShaderBrush(ImageShader(bitmap,TileMode.Repeated,TileMode.Repeated))
     }
-    val shell by lazy {sample(341,false)}
+    val shell by lazy {leather()}
     val lining by lazy {sample(872,true)}
     val paper by lazy {sample(119,false)}
 }

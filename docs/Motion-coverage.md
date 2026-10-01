@@ -2,6 +2,10 @@
 
 This is an implementation and acceptance checklist, not a claim that every row has passed. The motion expansion is in progress. Final evidence belongs in `Verification.md`.
 
+## Version 0.5.0 integration (validation in progress)
+
+The new physical-interface contract and material implementation are documented in `Physical-interface-contract.md` and `Physical-system.md`. The historical coverage below is not the acceptance record for this candidate. The scan now completes optical activity after OCR, then presents a deliberate review handoff while joint interpretation continues. Slow OCR repeats the optical sweep. Fast processing cannot skip the front or back presentation. The prior two-segment shared bounds path is replaced by one critically damped spring, and competing parent translation is removed for photo journeys.
+
 ## Card-case revision, versions 0.4.0–0.4.1
 
 The current collection uses a layered case, matte shell grain, woven lining and paper edges. Real photos travel along shared lifted bounds into detail and back to the case after confirmed saves; card selection follows a bounded lazy pager with visual overlap. The scan stage keeps one actual side visible, flips to the other and retains its optical sweep during joint interpretation. The source image is never covered with artificial texture.
@@ -10,7 +14,7 @@ Physical Pixel 9 renders confirmed the new case, corrected inherited text contra
 
 ## Shared contract
 
-Every interactive element needs an intentional response to press, release, cancellation, focus, selection and disabled state where applicable. Callbacks run immediately and exactly once; animation must never manufacture progress or delay a completed operation. Motion may be interrupted and retargeted. Gesture movement follows the finger. Haptics distinguish interaction from confirmation without firing twice.
+Every interactive element needs an intentional response to press, release, cancellation, focus, selection and disabled state where applicable. Interaction callbacks run immediately and exactly once. Animation must never manufacture processing progress. The ordered scan presentation intentionally retains each side for its optical sweep even if the backend finishes faster, then hands off the ready result; reduced motion removes that duration. Motion may be interrupted and retargeted. Gesture movement follows the finger. Haptics distinguish interaction from confirmation without firing twice.
 
 Whole-screen composition should not run for every drawing frame. Images must remain source-correct during transitions. Large text, keyboard changes, landscape/tablet layouts, screen-reader actions and the Android animation-duration setting are part of acceptance. Deep blue supplies shadows and dark surfaces.
 
