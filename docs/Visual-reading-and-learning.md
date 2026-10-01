@@ -1,5 +1,16 @@
 # Visual reading and local correction learning
 
+## 0.6.1 field-population regression fix
+
+OCR and visual interpretation still share one extraction request: both card photographs, OCR text, positioned source regions and alternative readings are supplied together. The visual model assigns readable text to fields and people. It now returns explicit field values; source IDs are optional review annotations instead of the primary representation of names, roles, companies and addresses. The previous ID-only contract could leave those fields blank when its references were missing or disputed.
+
+An entirely empty contact proposal requests one contextual repair, then fails validation if still empty. A failed reread preserves the existing draft. A successful but sparse reread preserves unresolved earlier values only for the matched person and marks them for review; explicit user-cleared fields stay empty. Explicit new channel readings replace old ones rather than merging an earlier mistake back in. Visual email proposals are not silently replaced by a differing OCR email, and visually read address endings are no longer trimmed merely because OCR omitted them. Uncorroborated values remain reviewable with warnings. No account name or external inference provider is involved.
+
+Actual Windows CPU model checks passed a synthetic card with three phones/two emails/two websites/full address, and recovered name/title/address from its photograph when those values were removed from supplied OCR. A two-person case remains imperfect: a contextual repair recovered the omitted person but corrupted their email. This is a recorded model limitation, not a passing accuracy gate. These checks use synthetic OCR text/positions, not Android OCR.
+
+Regression coverage includes explicit values with bad/missing OCR references, disagreement metadata, three distinct labelled phone numbers, multiple emails/websites, full addresses, first-draft storage roundtrip, sparse rereads, protected clears and reordered people. Synthetic/host checks do not establish accuracy on every real photographed card or Galaxy S26 performance.
+
+
 Release status for **0.3.1 / code 3**. The signed AAB passed signature, bundle and native alignment checks. All 14 final Android tests passed, including actual bounded-runtime Gemma extraction on three fictional fixtures. Code 2 is retained as history. See `Release-0.3.1.md` and `Verification.md`.
 
 ## Implemented

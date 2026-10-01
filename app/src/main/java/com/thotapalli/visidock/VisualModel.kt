@@ -228,6 +228,7 @@ class VisualModel(private val context: Context, private val gpuLanguage:Boolean=
             }
             }
             stage("conversation_closed")
+            VisualExtraction.requireUsable(proposal)
             stage("completed")
             if(BuildConfig.DEMO) evaluationObserver?.invoke("completed",proposal)
             // Keep weights warm for a short capture batch; conversations always close above.

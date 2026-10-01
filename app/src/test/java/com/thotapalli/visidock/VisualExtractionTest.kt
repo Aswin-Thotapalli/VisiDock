@@ -4,7 +4,65 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class VisualExtractionTest {
-    @Test fun printedDetailAlternativePreventsAddressSuffixDeletionWithoutInventingAnAddress() {
+    @Test fun misplacedVisualEmailDoesNotAcquireAConflictingOcrAddress() {
+        val result = VisualExtraction.parse("""{"contacts":[{"name":"Mira Sen","websites":["mira@example.com"]}]}""",
+            "Mira Sen\nmlra@example.com")
+        assertEquals(listOf("mira@example.com"), result.contacts.single().contactEmails)
+        assertTrue(result.contacts.single().contactWebsites.isEmpty())
+        assertTrue(result.warnings.any { "readings differed" in it })
+    }
+
+    @Test fun visualEmailCorrectionIsNotOverwrittenByAnOcrTypo() {
+        val result = VisualExtraction.parse("""{"contacts":[{"name":"Mira Sen","emails":["mira@example.com"]}]}""",
+            "Mira Sen\nmlra@example.com")
+        assertEquals(listOf("mira@example.com"), result.contacts.single().contactEmails)
+        assertTrue(result.warnings.any { "readings differed" in it })
+    }
+
+    @Test fun imageReadFieldsMissingFromOcrStillPopulateWithReviewWarnings() {
+        val result = VisualExtraction.parse("""{"contacts":[{"name":"Mira Sen","role":"Design Director",
+            "company":"Northline Studio","address":"Building 7, Lake Road","emails":["mira@example.com"]}]}""",
+            "Northline Studio")
+        val card = VisualExtraction.requireUsable(result).contacts.single()
+        assertEquals("Mira Sen", card.name)
+        assertEquals("Design Director", card.role)
+        assertEquals("Building 7, Lake Road", card.address)
+        assertEquals("mira@example.com", card.email)
+        assertTrue(result.warnings.any { "OCR did not confirm" in it })
+        assertEquals("Northline Studio", card.rawText)
+    }
+
+    @Test fun explicitFieldsSurviveMissingOrDisputedOcrAnnotations() {
+        val primary = OcrObservation(OcrRegion("Mira Sen", .1f, .1f, .5f, .2f))
+        val evidence = OcrEvidence(listOf(primary), listOf(OcrDisagreement(primary,
+            primary.copy(region = primary.region.copy(text = "Mira Sea"), pass = "detail"))))
+        val response = """{"contacts":[{"name":"Mira Sen","role":"Design Director","company":"Northline Studio",
+            "phones":[{"number":"040 2345 6789"},{"number":"040 2345 6790"},{"number":"+91 98765 43210"}],
+            "emails":["mira@example.com"],"websites":["www.example.com"],"address":"12 Lake Road\nBengaluru 560001",
+            "sources":{"name":["F1"],"role":["F99"],"address":["B99"]}}]}"""
+        val raw = "Mira Sen\nDesign Director\nNorthline Studio\n040 2345 6789\n040 2345 6790\n+91 98765 43210\nmira@example.com\nwww.example.com\n12 Lake Road\nBengaluru 560001"
+        val result = VisualExtraction.requireUsable(VisualExtraction.parse(response, raw, ocrEvidence = evidence))
+        val card = result.contacts.single()
+        assertEquals("Mira Sen", card.name)
+        assertEquals("Design Director", card.role)
+        assertEquals("Northline Studio", card.company)
+        assertEquals(3, card.contactPhones.size)
+        assertEquals("mira@example.com", card.email)
+        assertEquals("www.example.com", card.website)
+        assertEquals("12 Lake Road\nBengaluru 560001", card.address)
+        assertTrue(result.reviewIssues.any { it.field == "role" })
+    }
+
+    @Test fun emptyModelResponseRequestsRepairEvenWithoutRegionMetadata() {
+        val result = VisualExtraction.parse("""{"contacts":[{}]}""", "Mira Sen\nDesign Director")
+        assertTrue(result.reviewIssues.any { it.field == "empty" })
+        assertNotNull(SourceAssignments.repairPrompt(result))
+        assertThrows(IllegalArgumentException::class.java) { VisualExtraction.requireUsable(result) }
+        val repaired = VisualExtraction.parse("""{"contacts":[{"name":"Mira Sen","role":"Design Director"}]}""", "Mira Sen\nDesign Director")
+        assertEquals(repaired, VisualExtraction.requireUsable(SourceAssignments.preferRepair(result, repaired)))
+    }
+
+    @Test fun addressReadFromImageIsNotDeletedWhenOcrMissesItsEnding() {
         val street="12 Lake Road, Bengaluru 560001"
         val primary=OcrObservation(OcrRegion(street,.1f,.7f,.9f,.8f))
         val alternative=primary.copy(region=primary.region.copy(text="$street, India"),pass="detail")
@@ -14,20 +72,21 @@ class VisualExtractionTest {
             "Mira Sen\n$street",ocrEvidence=ocrEvidence)
         assertEquals("$street, India",read("$street, India",evidence).contacts.single().address)
         assertTrue(read("$street, India",evidence).warnings.any {"differed between OCR" in it})
-        // Without the printed alternative, the original hallucinated-country guard still applies.
-        assertEquals(street,read("$street, India",OcrEvidence()).contacts.single().address)
+        // OCR alone cannot prove that a visually read ending was not printed.
+        assertEquals("$street, India",read("$street, India",OcrEvidence()).contacts.single().address)
         // Alternatives never fill a blank or silently append a suffix themselves.
         assertEquals("",read("",evidence).contacts.single().address)
         assertEquals(street,read(street,evidence).contacts.single().address)
-        assertEquals(street,read("$street, Atlantis",evidence).contacts.single().address)
+        assertEquals("$street, Atlantis",read("$street, Atlantis",evidence).contacts.single().address)
+        assertTrue(read("$street, Atlantis",evidence).warnings.any { "OCR did not confirm" in it })
     }
-    @Test fun unprintedCountryCompletionIsRemovedButPrintedMultilineAddressIsPreserved() {
+    @Test fun unconfirmedAddressEndingIsFlaggedAndPrintedMultilineAddressIsPreserved() {
         fun read(address:String,ocr:String)=VisualExtraction.parse(org.json.JSONObject().put("contacts",
             org.json.JSONArray().put(org.json.JSONObject().put("name","Mira Sen").put("address",address))).toString(),"Mira Sen",ocr)
         val street="12 Lake Road, Bengaluru 560001"
         val completed=read("$street, India",street)
-        assertEquals(street,completed.contacts.single().address)
-        assertTrue(completed.warnings.any {"unprinted address ending" in it})
+        assertEquals("$street, India",completed.contacts.single().address)
+        assertTrue(completed.warnings.any {"address" in it && "OCR did not confirm" in it})
         val multiline="Building 7\n12 Lake Road\nBengaluru 560001\nIndia"
         assertEquals(multiline,read(multiline,multiline).contacts.single().address)
         assertEquals("$street, India",read("$street, India","12 Lake Road\nBengaluru 560001\nIndia").contacts.single().address)

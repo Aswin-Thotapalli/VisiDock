@@ -37,7 +37,28 @@ object ScanReconciliation {
             used += index
             val contact = proposal.contacts[index]
             val id = previous?.id ?: UUID.randomUUID().toString()
-            val baseline = contact.copy(id=id, sourceScanId=sourceScanId, isOwnCard=previous?.isOwnCard==true)
+            var baseline = contact.copy(id=id, sourceScanId=sourceScanId, isOwnCard=previous?.isOwnCard==true)
+            val retained=mutableSetOf<String>()
+            if(previous!=null && previous.id in baselines) {
+                val fields=baseline.record().toMutableMap()
+                val before=previous.record()
+                for(field in listOf("name","role","company","address")) {
+                    if((fields[field] as? String).isNullOrBlank() && !(before[field] as? String).isNullOrBlank()) {
+                        fields[field]=before.getValue(field);retained+=field
+                    }
+                }
+                if(baseline.contactPhones.isEmpty() && previous.contactPhones.isNotEmpty()) {
+                    fields["phone"]=before.getValue("phone");fields["phones"]=before.getValue("phones");retained+="phones"
+                }
+                if(baseline.contactEmails.isEmpty() && previous.contactEmails.isNotEmpty()) {
+                    fields["email"]=before.getValue("email");fields["emails"]=before.getValue("emails");retained+="email";retained+="emails"
+                }
+                if(baseline.contactWebsites.isEmpty() && previous.contactWebsites.isNotEmpty()) {
+                    fields["website"]=before.getValue("website");fields["websites"]=before.getValue("websites");retained+="website";retained+="websites"
+                }
+                // Carry-forward is not a new user correction and must not train the model as one.
+                baseline=cardFrom(id,fields)
+            }
             val preserved = if (previous == null) baseline else cardFrom(id,
                 previous.record() + baseline.record().filterKeys { it in extracted }).copy(
                     hasLocalFrontImage=previous.hasLocalFrontImage, hasLocalBackImage=previous.hasLocalBackImage)
@@ -46,8 +67,12 @@ object ScanReconciliation {
                     hasLocalFrontImage=preserved.hasLocalFrontImage, hasLocalBackImage=preserved.hasLocalBackImage)
             val target = output.size
             output += edited; originals += baseline
-            sources += proposal.sources.filter { it.contactIndex == index }.map { it.copy(contactIndex=target) }
+            sources += proposal.sources.filter { it.contactIndex == index && it.field.substringBefore('.') !in retained }.map { it.copy(contactIndex=target) }
             issues += proposal.reviewIssues.filter { it.contactIndex == index }.map { it.copy(contactIndex=target) }
+            if(retained.isNotEmpty()) warnings+="Person ${target+1}: The new reading left some fields unresolved. Earlier values were kept; check them against the photograph."
+            retained.filterNot {it in listOf("emails","websites")}.forEach {field->
+                issues+=ExtractionReviewIssue(target,field,"The new reading did not resolve this field. Your earlier value was kept; check it against the photograph.")
+            }
         }
         val needsOwnerChoice=baselines.isEmpty() && current?.isOwnCard==true && proposal.contacts.size>1
         if (baselines.isEmpty()) {
@@ -57,7 +82,8 @@ object ScanReconciliation {
             }
         } else {
             checkNotNull(current)
-            val currentMatch = match(current, activeIndex) ?: if (proposal.contacts.size == 1 && pending.isEmpty() && processed.isEmpty()) 0 else null
+            val currentMatch = match(current, activeIndex) ?: if (proposal.contacts.size == 1 &&
+                proposal.contacts.single().name.isBlank() && pending.isEmpty() && processed.isEmpty()) 0 else null
             check(currentMatch != null) { "The new reading could not safely match the person you are editing. Your details and remaining people were kept." }
             append(currentMatch, current, protected)
             pending.forEachIndexed { offset, old ->

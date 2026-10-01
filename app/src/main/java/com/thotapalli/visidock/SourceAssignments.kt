@@ -207,7 +207,7 @@ internal object SourceAssignments {
             .put("person", issue.contactIndex + 1).put("field", issue.field)
             .put("reason", issue.reason).put("sources", JSONArray(issue.sourceIds)) })
         return "Review these assignment problems against the SAME photographs and source IDs: $issues\n" +
-            "Return the COMPLETE corrected contacts JSON with sources. Preserve all correctly read details and every person. " +
+            "Return the COMPLETE corrected contacts JSON with actual field values; source IDs are optional annotations, never replacements for values. Preserve all correctly read details and every person. " +
             "If there is no printed person, mark kind=company. Use the image and layout to distinguish names from roles. " +
             "Do not invent values, ownership or punctuation. Leave genuinely ambiguous fields empty and explain in warnings."
     }

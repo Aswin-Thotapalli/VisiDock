@@ -76,4 +76,74 @@ class ScanReconciliationTest {
         assertEquals(listOf(source),SourceReviewState.readSources(SourceReviewState.sources(listOf(source))))
         assertEquals(listOf(issue),SourceReviewState.readIssues(SourceReviewState.issues(listOf(issue))))
     }
+    @Test fun sparseSuccessfulRereadKeepsPriorScalarAndChannelValuesWithReview() {
+        val current=mira.copy(company="Northline",address="12 Lake Road",phone="9876543210",phones=listOf(PhoneNumber("9876543210","Mobile")),
+            email="mira@example.com",emails=listOf("mira@example.com","studio@example.com"),website="www.example.com")
+        val result=ScanReconciliation.reconcile(VisualProposal(listOf(Card(name="Mira Sen")),emptyList()),current,emptyList(),
+            mapOf(current.id to current),emptyList(),emptyList(),0,null,"next-scan")
+        val retained=result.cards.single()
+        assertEquals(current.role,retained.role);assertEquals(current.company,retained.company);assertEquals(current.address,retained.address)
+        assertEquals(current.contactPhones,retained.contactPhones);assertEquals(current.contactEmails,retained.contactEmails)
+        assertEquals(current.contactWebsites,retained.contactWebsites)
+        assertTrue(result.issues.any {it.field=="role" && it.reason.contains("earlier value")})
+        assertTrue(result.issues.any {it.field=="phones"})
+        assertTrue(CorrectionPolicy.activity(result.baselines.single(),retained).isEmpty())
+    }
+    @Test fun entirelyEmptySuccessfulRereadDoesNotEraseExistingPerson() {
+        val result=reconcile(VisualProposal(listOf(Card()),emptyList()))
+        assertEquals(mira.name,result.cards.single().name);assertEquals(mira.role,result.cards.single().role)
+        assertEquals(mira.id,result.cards.single().id);assertTrue(result.cards.single().isOwnCard)
+        assertTrue(result.issues.any {it.field=="name"})
+    }
+    @Test fun explicitUserClearsRemainEmptyAfterSparseReread() {
+        val current=mira.copy(role="",email="",emails=emptyList())
+        val result=reconcile(VisualProposal(listOf(Card(name="Mira Sen")),emptyList()),current,
+            protection=JSONObject().put("role","").put("email","").put("emails",org.json.JSONArray()))
+        assertEquals("",result.cards.single().role);assertTrue(result.cards.single().contactEmails.isEmpty())
+    }
+    @Test fun reorderedSparsePeopleKeepTheirOwnValuesWithoutCrossFilling() {
+        val current=mira.copy(email="mira@example.com",address="Mira office")
+        val other=dev.copy(email="dev@example.com",address="Dev office")
+        val result=ScanReconciliation.reconcile(VisualProposal(listOf(Card(name=other.name),Card(name=current.name)),emptyList()),current,listOf(other),
+            mapOf(current.id to current,other.id to other),emptyList(),emptyList(),0,null,"scan")
+        assertEquals(listOf(current.id,other.id),result.cards.map {it.id})
+        assertEquals(listOf("mira@example.com","dev@example.com"),result.cards.map {it.email})
+        assertEquals(listOf("Mira office","Dev office"),result.cards.map {it.address})
+    }
+    @Test fun aDifferentNamedPersonCannotBorrowTheSingleExistingPersonsDetails() {
+        assertThrows(IllegalStateException::class.java) {
+            reconcile(VisualProposal(listOf(Card(name="An unrelated person")),emptyList()))
+        }
+    }
+    @Test fun newAdditionalPersonDoesNotInheritRetainedChannelsFromExistingPerson() {
+        val current=mira.copy(email="mira@example.com")
+        val result=ScanReconciliation.reconcile(VisualProposal(listOf(Card(name="Mira Sen"),Card(name="New person")),emptyList()),current,emptyList(),
+            mapOf(current.id to current),emptyList(),emptyList(),0,null,"scan")
+        assertEquals("mira@example.com",result.cards.first().email)
+        assertEquals("",result.cards[1].email);assertEquals("",result.cards[1].role)
+    }
+    @Test fun explicitNewChannelsReplaceOldReadingsRatherThanUnioningAnEarlierMistake() {
+        val current=mira.copy(email="wrong@example.com")
+        val result=ScanReconciliation.reconcile(VisualProposal(listOf(Card(name="Mira Sen",email="correct@example.com")),emptyList()),current,emptyList(),
+            mapOf(current.id to current),emptyList(),emptyList(),0,null,"scan")
+        assertEquals(listOf("correct@example.com"),result.cards.single().contactEmails)
+    }
+
+    @Test fun literalExtractionWithUnusableSourcesSurvivesInitialDraftAndRecordRoundTrip() {
+        val text="Mira Sen\nDesign Director\nNorthline Studio\nMobile +91 98765 43210\nOffice 080 23456789\nOffice 080 23456780\nmira@example.com\nstudio@example.com\nwww.example.com\nwww.studio.example\n12 Lake Road\nBengaluru 560001"
+        val ocr=OcrEvidence(text.lines().mapIndexed {i,line->OcrObservation(OcrRegion(line,.1f,.02f+i*.06f,.9f,.06f+i*.06f))})
+        val proposal=VisualExtraction.parse("""{"contacts":[{"name":"Mira Sen","role":"Design Director","company":"Northline Studio","address":"12 Lake Road\nBengaluru 560001","phones":[{"number":"+91 98765 43210","label":"Mobile"},{"number":"080 23456789","label":"Office"},{"number":"080 23456780","label":"Office"}],"emails":["mira@example.com","studio@example.com"],"websites":["www.example.com","www.studio.example"],"sources":{"name":["F99"],"role":["F98"],"address":["B77"]}}]}""",text,"",ocr)
+        assertTrue(proposal.reviewIssues.any {it.reason.contains("not in this scan")})
+        val result=ScanReconciliation.reconcile(proposal,Card(id="draft"),emptyList(),emptyMap(),emptyList(),emptyList(),0,null,"scan")
+        val card=result.cards.single()
+        val stored=cardFrom(card.id,card.record())
+        assertEquals("draft",stored.id);assertEquals("Mira Sen",stored.name)
+        assertEquals("Design Director",stored.role);assertEquals("Northline Studio",stored.company)
+        assertEquals("12 Lake Road\nBengaluru 560001",stored.address)
+        assertEquals(listOf(PhoneNumber("+91 98765 43210","Mobile"),PhoneNumber("080 23456789","Office"),PhoneNumber("080 23456780","Office")),stored.contactPhones)
+        assertEquals(listOf("mira@example.com","studio@example.com"),stored.contactEmails)
+        assertEquals(listOf("www.example.com","www.studio.example"),stored.contactWebsites)
+        assertEquals(text,stored.rawText);assertEquals("scan",stored.sourceScanId)
+    }
+
 }

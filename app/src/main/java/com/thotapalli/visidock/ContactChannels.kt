@@ -63,7 +63,7 @@ object ContactChannels {
     }.distinctBy { it.lowercase(Locale.ROOT) }
 
     data class Resolved(val email: String, val website: String, val warnings: List<String>)
-    fun resolve(proposedEmail: String, proposedWebsite: String, evidence: String, allowUnassigned: Boolean): Resolved {
+    fun resolve(proposedEmail: String, proposedWebsite: String, evidence: String, allowUnassigned: Boolean, visualReading: Boolean = false): Resolved {
         val warnings = mutableListOf<String>()
         val emails = emails(evidence)
         var mail = email(proposedEmail).orEmpty()
@@ -91,8 +91,9 @@ object ContactChannels {
         val confirmed = emails.singleOrNull()
         if (allowUnassigned && confirmed != null && mail.isNotEmpty() &&
             !mail.equals(confirmed, true)) {
-            mail = confirmed
-            warnings += "Email readings differed. Kept the complete address recognized in the photograph; check it before saving."
+            if (!visualReading) mail = confirmed
+            warnings += if (visualReading) "Email readings differed between visual interpretation and OCR. Kept the visual reading; check it against the photograph."
+                else "Email readings differed. Kept the complete address recognized in the photograph; check it before saving."
         }
         if (mail.isEmpty() && emails.isNotEmpty()) {
             warnings += if (allowUnassigned) "Several email addresses were recognized. Choose the correct address from the photograph."
