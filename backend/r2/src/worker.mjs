@@ -27,7 +27,9 @@ export async function readManifest(token, projectId, uid, cardId, fetcher = fetc
   if (!result.ok) fail(503, 'Image service temporarily unavailable');
   const document = await result.json();
   const value = field => document.fields?.[field]?.stringValue;
-  return { status: value('status'), imagePath: value('imagePath'), originalPath: value('originalPath'), backImagePath: value('backImagePath'), backOriginalPath: value('backOriginalPath') };
+  const previousFields = document.fields?.previousRecord?.mapValue?.fields;
+  const previousRecord = previousFields ? Object.fromEntries(['imagePath','originalPath','backImagePath','backOriginalPath'].map(key => [key, previousFields[key]?.stringValue])) : undefined;
+  return { status: value('status'), imagePath: value('imagePath'), originalPath: value('originalPath'), backImagePath: value('backImagePath'), backOriginalPath: value('backOriginalPath'), previousRecord };
 }
 
 async function boundedBody(request, limit) {
@@ -65,7 +67,7 @@ export function createWorker({ verify = verifyFirebaseToken, manifest = readMani
     async fetch(request, env) {
       try {
         const url = new URL(request.url);
-        const match = /^\/v1\/cards\/([A-Za-z0-9_-]{1,128})\/(original|preview\.jpg|back-original|back-preview\.jpg)$/.exec(url.pathname);
+        const match = /^\/v1\/cards\/([A-Za-z0-9_-]{1,128})\/((?:back-)?(?:original(?:-r[a-f0-9]{32})?|preview(?:-r[a-f0-9]{32})?\.jpg))$/.exec(url.pathname);
         if (!match || url.search) fail(404, 'Not found');
         if (!['GET', 'PUT', 'DELETE'].includes(request.method)) return new Response(null, { status: 405, headers: { ...headers, Allow: 'GET, PUT, DELETE' } });
         const bearer = /^Bearer ([A-Za-z0-9_.-]+)$/.exec(request.headers.get('Authorization') || '');
@@ -74,11 +76,17 @@ export function createWorker({ verify = verifyFirebaseToken, manifest = readMani
         try { uid = await verify(bearer[1], env.FIREBASE_PROJECT_ID); } catch { fail(401, 'Authentication required'); }
         if (!safeId(uid)) fail(401, 'Authentication required');
         const [, cardId, file] = match;
+        const kind = file.replace(/-r[a-f0-9]{32}/, '');
+        const field = ({original:'originalPath','preview.jpg':'imagePath','back-original':'backOriginalPath','back-preview.jpg':'backImagePath'})[kind];
         const key = `users/${uid}/cards/${cardId}/${file}`;
         const state = await manifest(bearer[1], env.FIREBASE_PROJECT_ID, uid, cardId);
         const expectedStatus = { GET: 'ready', PUT: 'uploading', DELETE: 'deleting' }[request.method];
-        if (state.status !== expectedStatus) fail(409, 'Card is not ready for this operation');
-        if (state[({original:'originalPath','preview.jpg':'imagePath','back-original':'backOriginalPath','back-preview.jpg':'backImagePath'})[file]] !== key) fail(404, 'Image unavailable');
+        const current = state[field] === key;
+        const previous = state.previousRecord?.[field] === key;
+        const priorRead = request.method === 'GET' && ['uploading','rollingBack'].includes(state.status) && previous;
+        const cleanup = request.method === 'DELETE' && ((state.status === 'ready' && previous && !current) || (state.status === 'rollingBack' && current && !previous));
+        if (state.status !== expectedStatus && !priorRead && !cleanup) fail(409, 'Card is not ready for this operation');
+        if (!current && !priorRead && !cleanup && !(request.method === 'DELETE' && state.status === 'deleting' && previous)) fail(404, 'Image unavailable');
         if (request.method === 'DELETE') {
           await env.CARD_IMAGES.delete(key);
           return new Response(null, { status: 204, headers });
@@ -89,22 +97,24 @@ export function createWorker({ verify = verifyFirebaseToken, manifest = readMani
           return new Response(object.body, { headers: { ...headers, 'Content-Type': object.httpMetadata?.contentType || 'application/octet-stream', 'Content-Length': String(object.size) } });
         }
         const type = request.headers.get('Content-Type')?.toLowerCase();
-        const allowed = file.endsWith('preview.jpg') ? ['image/jpeg'] : ['image/jpeg', 'image/png', 'image/webp'];
+        const allowed = kind.endsWith('preview.jpg') ? ['image/jpeg'] : ['image/jpeg', 'image/png', 'image/webp'];
         if (!allowed.includes(type)) fail(415, 'Unsupported image type');
-        const data = await boundedBody(request, limits[file]);
+        const data = await boundedBody(request, limits[kind]);
         if (!validSignature(data, type)) fail(415, 'Image content does not match its type');
         // Recheck after reading the bounded body so a concurrent delete is less likely to race an upload.
         const latest = await manifest(bearer[1], env.FIREBASE_PROJECT_ID, uid, cardId);
-        if (latest.status !== 'uploading' || latest[({original:'originalPath','preview.jpg':'imagePath','back-original':'backOriginalPath','back-preview.jpg':'backImagePath'})[file]] !== key) fail(409, 'Card changed during upload');
+        if (latest.status !== 'uploading' || latest[field] !== key || latest.previousRecord?.[field] === key) fail(409, 'Card changed during upload');
         await env.CARD_IMAGES.put(key, data, { httpMetadata: { contentType: type, cacheControl: 'private, no-store' } });
-        // Compensate if deletion won the race while R2 was writing. A failed
-        // verification is also treated conservatively: the client can retry.
-        try {
-          const after = await manifest(bearer[1], env.FIREBASE_PROJECT_ID, uid, cardId);
-          if (!['uploading', 'ready'].includes(after.status) || after[({original:'originalPath','preview.jpg':'imagePath','back-original':'backOriginalPath','back-preview.jpg':'backImagePath'})[file]] !== key) fail(409, 'Card changed during upload');
-        } catch (error) {
+        // A timeout or unavailable manifest is ambiguous: another retry may already
+        // have committed this revision. Preserve it for retry/durable cleanup.
+        const after = await manifest(bearer[1], env.FIREBASE_PROJECT_ID, uid, cardId);
+        if (!['uploading', 'ready', 'rollingBack', 'deleting'].includes(after.status)) fail(503, 'Image service temporarily unavailable');
+        const stillCurrent = ['uploading', 'ready'].includes(after.status) && after[field] === key;
+        // A late response from the preceding upload can overlap a later replacement.
+        const stillRetained = ['uploading', 'ready', 'rollingBack'].includes(after.status) && after.previousRecord?.[field] === key;
+        if (!stillCurrent && !stillRetained) {
           await env.CARD_IMAGES.delete(key);
-          throw error;
+          fail(409, 'Card changed during upload');
         }
         return new Response(null, { status: 204, headers });
       } catch (error) {

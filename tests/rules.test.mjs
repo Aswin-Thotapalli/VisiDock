@@ -1,7 +1,7 @@
 import { before, after, beforeEach, test } from 'node:test';
 import { readFileSync } from 'node:fs';
 import { initializeTestEnvironment, assertSucceeds, assertFails } from '@firebase/rules-unit-testing';
-import { doc, setDoc, getDoc, updateDoc, deleteDoc, getDocs, collection } from 'firebase/firestore';
+import { doc, setDoc, getDoc, updateDoc, deleteDoc, getDocs, collection, deleteField } from 'firebase/firestore';
 import { ref, uploadBytes, getBytes, deleteObject } from 'firebase/storage';
 
 let env;
@@ -10,6 +10,25 @@ before(async () => { env = await initializeTestEnvironment({projectId:'demo-visi
 beforeEach(async () => { await env.clearFirestore(); await env.clearStorage(); });
 after(async () => { await env?.cleanup(); });
 const db = uid => env.authenticatedContext(uid).firestore();
+
+test('image replacement requires exact rollback record and permits durable completion and rollback',async()=>{
+  const target=doc(db('alice'),'users/alice/cards/one');const original={...card(),sourceScanId:'11111111-1111-1111-1111-111111111111'};
+  await setDoc(target,original);
+  const next={...original,status:'uploading',sourceScanId:'22222222-2222-2222-2222-222222222222',previousRecord:original,
+    backImagePath:'users/alice/cards/one/back-preview-r'+'2'.repeat(32)+'.jpg',backOriginalPath:'users/alice/cards/one/back-original-r'+'2'.repeat(32),uploadStartedAt:Date.now()};
+  await assertFails(setDoc(target,{...next,previousRecord:{...original,name:'Forged'}}));
+  await assertFails(setDoc(target,{...next,backImagePath:'users/bob/cards/one/back-preview-r'+'2'.repeat(32)+'.jpg'}));
+  await assertSucceeds(setDoc(target,next));
+  await assertFails(setDoc(target,original));
+  await assertSucceeds(updateDoc(target,{status:'rollingBack'}));
+  await assertFails(updateDoc(target,{status:'ready'}));
+  await assertSucceeds(setDoc(target,original)); // failed replacement restores exact old record
+  await assertSucceeds(setDoc(target,next));
+  await assertSucceeds(updateDoc(target,{status:'ready'}));
+  await assertFails(setDoc(target,{...next,sourceScanId:'33333333-3333-3333-3333-333333333333',previousRecord:{...next,status:'ready'}}));
+  await assertSucceeds(updateDoc(target,{previousRecord:deleteField()}));
+  await assertSucceeds(updateDoc(target,{notes:'Still editable'}));
+});
 
 test('two-sided cards keep owner paths and scan grouping immutable', async () => {
   const target=doc(db('alice'),'users/alice/cards/one');

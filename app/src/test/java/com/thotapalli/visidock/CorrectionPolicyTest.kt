@@ -4,6 +4,21 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class CorrectionPolicyTest {
+    @Test fun typoFixesAndRemovalsRemainVisibleWithoutTeachingUnsupportedText() {
+        val before=Card(id="one",name="Mlra Sen",email="wrong@example.com",rawText="Mlra Sen\nwrong@example.com")
+        val events=CorrectionPolicy.activity(before,before.copy(name="Mira Sen",email=""),123L)
+        assertEquals(listOf("name","email"),events.map {it.field})
+        assertEquals("Mlra Sen",events.first().before)
+        assertEquals("Mira Sen",events.first().after)
+        assertTrue(events.all {it.timestamp==123L && !it.eligibleForLearning})
+    }
+    @Test fun activitySeparatesSupportedTrainingAndPhoneLabelOnlyEdits() {
+        val before=Card(id="one",name="Northline Studio",rawText="Mira Sen\nNorthline Studio\n9876543210",phones=listOf(PhoneNumber("9876543210")))
+        val events=CorrectionPolicy.activity(before,before.copy(name="Mira Sen",phones=listOf(PhoneNumber("9876543210","Mobile"))))
+        assertTrue(events.single {it.field=="name"}.eligibleForLearning)
+        assertFalse(events.single {it.field=="phone"}.eligibleForLearning)
+        assertTrue(CorrectionPolicy.activity(before,before.copy(notes="Lunch")).isEmpty())
+    }
     @Test fun companyMistakenForNameCanBecomeALocalLabelHint() {
         val proposed=Card(id="one",name="Northline Studio",rawText="Northline Studio\nMira Sen")
         val corrections=CorrectionPolicy.learn(proposed,proposed.copy(name="Mira Sen",company="Northline Studio"))

@@ -24,6 +24,15 @@ class VisualModelDeviceTest {
         val instrumentation=InstrumentationRegistry.getInstrumentation()
         val context=instrumentation.targetContext
         val model=VisualModel(context)
+        if(!model.installed() && InstrumentationRegistry.getArguments().getString("downloadVisualModel")=="true") {
+            // Explicit remote-device opt-in; downloads only the public pinned model.
+            // Production card data and Firebase account credentials are never fixtures.
+            withTimeout(10*60*1000L) {model.download {percent->
+                if(percent%20==0) instrumentation.sendStatus(2,Bundle().apply {
+                    putString("stream","Preparing verified public test model: $percent%\n")
+                })
+            }}
+        }
         assertTrue("Preinstall the verified model in filesDir/visual-model/gemma-4-e2b.litertlm",model.installed())
         val device="${Build.MANUFACTURER} ${Build.MODEL}; API ${Build.VERSION.SDK_INT}; ${Build.SUPPORTED_ABIS.joinToString()}"
         val directory=File(context.cacheDir,"visual-device-test").apply {mkdirs()}

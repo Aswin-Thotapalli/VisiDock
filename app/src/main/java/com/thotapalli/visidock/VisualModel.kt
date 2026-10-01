@@ -13,11 +13,26 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.flow.takeWhile
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
 
 class VisualReadingUnavailableException(message:String,cause:Throwable?=null):IllegalStateException(message,cause)
 
 /** Pinned, checksum-verified public model. Photographs never leave this runtime. */
 class VisualModel(private val context: Context) {
+    private val runtimeScope=CoroutineScope(SupervisorJob()+Dispatchers.Default)
+    private var warmEngine:Engine?=null
+    private var warmCpuVision:Boolean?=null
+    private var warmImageCount:Int=0
+    private var idleRelease:Job?=null
+    private fun releaseEngine() {
+        warmEngine?.let {runCatching {it.close()}}
+        warmEngine=null;warmCpuVision=null;warmImageCount=0
+    }
+    fun release() { runtimeScope.launch {extractionMutex.withLock {idleRelease?.cancel();releaseEngine()}} }
     companion object {
         private val extractionMutex=Mutex()
         const val BYTES = 2588147712L
@@ -86,6 +101,7 @@ class VisualModel(private val context: Context) {
         requireSupportedDevice()
         check(installed()) { "Download visual reading in Settings first." }
         require(front.isFile && (back == null || back.isFile)) { "The card photograph is no longer available." }
+        idleRelease?.cancel()
         val preferences=context.getSharedPreferences("visual-runtime",Context.MODE_PRIVATE)
         val cpuKey="cpu-vision-0.17.1-$SHA256-${android.os.Build.FINGERPRINT.hashCode()}"
         if(preferences.getBoolean(cpuKey,false)) {
@@ -105,30 +121,47 @@ class VisualModel(private val context: Context) {
     @OptIn(ExperimentalApi::class)
     private suspend fun infer(front: File, back: File?, frontText: String, backText: String, localHints: String, cpuVision: Boolean): VisualProposal {
         currentCoroutineContext().ensureActive()
-        val memory=android.app.ActivityManager.MemoryInfo()
-        (context.getSystemService(Context.ACTIVITY_SERVICE) as android.app.ActivityManager).getMemoryInfo(memory)
-        if(memory.lowMemory || memory.availMem<2L*1024*1024*1024)
-            throw VisualReadingUnavailableException("Not enough free memory for visual reading right now. Close other apps and retry, or review the text suggestions.")
+        val imageCount=if(back==null) 1 else 2
+        // A changed signature needs a cold engine, so it must pass the cold budget.
+        if(warmEngine!=null && (warmCpuVision!=cpuVision || warmImageCount!=imageCount)) releaseEngine()
+        fun requireMemory(warm: Boolean) {
+            val manager=context.getSystemService(Context.ACTIVITY_SERVICE) as android.app.ActivityManager
+            val memory=android.app.ActivityManager.MemoryInfo().also {manager.getMemoryInfo(it)}
+            if(!VisualMemoryPolicy.allows(memory.totalMem,memory.availMem,memory.lowMemory,
+                    manager.isLowRamDevice,BYTES,warm,imageCount,memory.threshold)) {
+                val message=if(manager.isLowRamDevice || memory.totalMem<VisualMemoryPolicy.MIN_TOTAL)
+                    "This device does not have enough memory for the visual model. You can still scan, review text suggestions and save cards."
+                else "Not enough free memory for visual reading right now. Close other apps and retry, or review the text suggestions."
+                throw VisualReadingUnavailableException(message)
+            }
+        }
+        try { requireMemory(warmEngine!=null) }
+        catch(e:VisualReadingUnavailableException) {releaseEngine();throw e}
         val started=android.os.SystemClock.elapsedRealtime()
         fun stage(name:String) {
             if(BuildConfig.DEBUG) android.util.Log.d("VisiDockVisualRuntime",
                 "vision=${if(cpuVision) "cpu" else "gpu"} stage=$name elapsedMs=${android.os.SystemClock.elapsedRealtime()-started}")
         }
         stage("initializing")
-        val engine = try {
+        val reused=warmEngine!=null
+        val engine = warmEngine ?: try {
             // This must precede Engine construction to also bound encoder allocation/signatures.
             ExperimentalFlags.visualTokenBudget=280
             Engine.setNativeMinLogSeverity(LogSeverity.ERROR)
             Engine(EngineConfig(modelPath = model.path, backend = Backend.CPU(),
-                visionBackend = if(cpuVision) Backend.CPU() else Backend.GPU(), maxNumTokens = 4096, maxNumImages = if(back==null) 1 else 2,
+                visionBackend = if(cpuVision) Backend.CPU() else Backend.GPU(), maxNumTokens = 4096, maxNumImages = imageCount,
                 cacheDir = File(context.cacheDir,if(cpuVision) "vision-cpu" else "vision-gpu").apply {mkdirs()}.path))
         } catch(e: LinkageError) {
             throw VisualReadingUnavailableException("Visual reading is unavailable in this device's native runtime. You can still review text suggestions.",e)
         }
         try {
-            val proposal=AutoCloseable { if(engine.isInitialized()) engine.close() }.use {
-            engine.initialize()
-            stage("initialized")
+            val proposal=run {
+            if(!reused) engine.initialize()
+            warmEngine=engine;warmCpuVision=cpuVision;warmImageCount=imageCount
+            stage(if(reused) "reused" else "initialized")
+            // Initialization can consume the reserve that was available at admission.
+            // Check again before native image encoding/prefill, where the observed kill occurred.
+            requireMemory(true)
             currentCoroutineContext().ensureActive()
             engine.createConversation(ConversationConfig(systemInstruction = Contents.of(VisualExtraction.instruction),
                 samplerConfig = SamplerConfig(topK = 1, topP = 1.0, temperature = 0.0),
@@ -163,9 +196,19 @@ class VisualModel(private val context: Context) {
             }
             }
             stage("completed")
+            // Keep weights warm for a short capture batch; conversations always close above.
+            // Idle expiry frees memory without retaining a user's inference context.
+            idleRelease=runtimeScope.launch {
+                delay(60_000)
+                extractionMutex.withLock {releaseEngine()}
+            }
             return proposal
         } catch(e: LinkageError) {
+            if(warmEngine===engine) releaseEngine() else runCatching {engine.close()}
             throw VisualReadingUnavailableException("Visual reading is unavailable in this device's native runtime. You can still review text suggestions.",e)
+        } catch(e: Exception) {
+            if(warmEngine===engine) releaseEngine() else runCatching {engine.close()}
+            throw e
         }
     }
 }

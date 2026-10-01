@@ -68,5 +68,7 @@ class CardPresentationTest {
         compose.onNodeWithText("Front of card · keep all edges in view").assertExists()
         compose.onNodeWithContentDescription("Close camera").performClick()
         compose.onNodeWithContentDescription("Add card").assertExists()
+        compose.onNodeWithText("Review your card").assertDoesNotExist()
+        compose.onNodeWithText("Discard your changes?").assertDoesNotExist()
     }
 }

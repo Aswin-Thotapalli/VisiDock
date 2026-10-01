@@ -4,6 +4,22 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class VisualExtractionTest {
+    @Test fun unprintedCountryCompletionIsRemovedButPrintedMultilineAddressIsPreserved() {
+        fun read(address:String,ocr:String)=VisualExtraction.parse(org.json.JSONObject().put("contacts",
+            org.json.JSONArray().put(org.json.JSONObject().put("name","Mira Sen").put("address",address))).toString(),"Mira Sen",ocr)
+        val street="12 Lake Road, Bengaluru 560001"
+        val completed=read("$street, India",street)
+        assertEquals(street,completed.contacts.single().address)
+        assertTrue(completed.warnings.any {"unprinted address ending" in it})
+        val multiline="Building 7\n12 Lake Road\nBengaluru 560001\nIndia"
+        assertEquals(multiline,read(multiline,multiline).contacts.single().address)
+        assertEquals("$street, India",read("$street, India","12 Lake Road\nBengaluru 560001\nIndia").contacts.single().address)
+        // Missing OCR lines must not cause us to trim printed trailing components.
+        val partialOcr="12 Lake Road\nIndia"
+        assertEquals("$street, India",read("$street, India",partialOcr).contacts.single().address)
+        // Never join scattered fragments to claim that an address is grounded.
+        assertEquals("$street, India",read("$street, India","12 Lake Road\nother office\nBengaluru 560001").contacts.single().address)
+    }
     @Test fun retainsThreeSeparatelyLabelledNumbersAndOnlyOneLegacyPrimary() {
         val raw="Mira Sen\nOffice: 040 2345 6789\nDirect: 040 2345 6790\nMobile: +91 98765 43210"
         val result=VisualExtraction.parse("""{"contacts":[{"name":"Mira Sen","phones":[{"number":"040 2345 6789","label":"Office"},{"number":"040 2345 6790","label":"Direct"},{"number":"+91 98765 43210","label":"Mobile"}]}]}""",raw)

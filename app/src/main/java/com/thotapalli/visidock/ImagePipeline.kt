@@ -23,7 +23,15 @@ data class ScanFiles(val original: File, val preview: File, val mime: String, va
 object ImagePipeline {
     const val MAX_ORIGINAL = 20L * 1024 * 1024
     fun directory(context: Context) = File(context.filesDir, "drafts").apply { mkdirs() }
-    suspend fun scan(context: Context, uri: Uri): ScanFiles = withContext(Dispatchers.IO) {
+    suspend fun scan(context: Context, uri: Uri): ScanFiles {
+        val files = prepare(context, uri)
+        return try { read(context, files) } catch (error: Throwable) {
+            files.original.delete(); files.preview.delete(); throw error
+        }
+    }
+
+    /** Stage both photographs before paying the OCR/model cost. The caller owns returned files. */
+    suspend fun prepare(context: Context, uri: Uri): ScanFiles = withContext(Dispatchers.IO) {
         val key = UUID.randomUUID().toString()
         val original = File(directory(context), "$key.original")
         val preview = File(directory(context), "$key.jpg")
@@ -67,21 +75,55 @@ object ImagePipeline {
             if (bitmap !== rotated) rotated.recycle()
             preview.outputStream().use { check(bitmap.compress(Bitmap.CompressFormat.JPEG, 88, it)) { "Could not prepare this image." } }
             currentCoroutineContext().ensureActive()
-            val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
-            // Await native OCR completion even on cancellation before recycling its bitmap.
-            val recognized = try {
-                withContext(NonCancellable) { recognizer.process(InputImage.fromBitmap(bitmap, 0)).await() }
-            } finally { recognizer.close() }
-            currentCoroutineContext().ensureActive()
             complete = true
-            val regions = recognized.textBlocks.flatMap { block -> block.lines }.mapNotNull { line ->
-                line.boundingBox?.let { box -> OcrRegion(line.text, box.left.toFloat()/bitmap.width,
-                    box.top.toFloat()/bitmap.height, box.right.toFloat()/bitmap.width, box.bottom.toFloat()/bitmap.height) }
-            }
-            ScanFiles(original, preview, bounds.outMimeType, recognized.text, regions)
+            ScanFiles(original, preview, bounds.outMimeType, "")
         } finally {
             ownedBitmaps.forEach { if (!it.isRecycled) it.recycle() }
             if (!complete) { original.delete(); preview.delete() }
+        }
+    }
+
+    /** OCR the detailed source, not the smaller display JPEG: punctuation needs those pixels. */
+    suspend fun read(context: Context, files: ScanFiles): ScanFiles = withContext(Dispatchers.IO) {
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeFile(files.original.path, bounds)
+        require(bounds.outWidth > 0 && bounds.outHeight > 0) { "This card photograph is no longer available. Retake this side." }
+        var sample = 1
+        // Decode one sampling level above the target, then resize precisely. A 3000px
+        // photograph must not become 1500px before OCR reads its tiny @ and dot marks.
+        while (maxOf(bounds.outWidth, bounds.outHeight) / sample > 4800) sample *= 2
+        val decoded = BitmapFactory.decodeFile(files.original.path, BitmapFactory.Options().apply {
+            inSampleSize = sample
+            // Decoder scaling avoids holding both a 4800px intermediate and a
+            // separate resized bitmap in an app that also runs a local model.
+            inDensity = maxOf(bounds.outWidth, bounds.outHeight) / sample
+            inTargetDensity = minOf(inDensity, 2400)
+            inScaled = inTargetDensity < inDensity
+        })
+            ?: error("Could not read this card photograph.")
+        var bitmap = decoded
+        try {
+            val exif = runCatching { ExifInterface(files.original) }.getOrNull()
+            val matrix = Matrix().apply {
+                if (exif?.isFlipped == true) postScale(-1f, 1f)
+                postRotate((exif?.rotationDegrees ?: 0).toFloat())
+            }
+            bitmap = Bitmap.createBitmap(decoded, 0, 0, decoded.width, decoded.height, matrix, true)
+            currentCoroutineContext().ensureActive()
+            val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
+            val recognized = try {
+                // Native recognition must finish before its bitmap can safely be released.
+                withContext(NonCancellable) { recognizer.process(InputImage.fromBitmap(bitmap, 0)).await() }
+            } finally { recognizer.close() }
+            currentCoroutineContext().ensureActive()
+            val regions = recognized.textBlocks.flatMap { it.lines }.mapNotNull { line ->
+                line.boundingBox?.let { box -> OcrRegion(line.text, box.left.toFloat()/bitmap.width,
+                    box.top.toFloat()/bitmap.height, box.right.toFloat()/bitmap.width, box.bottom.toFloat()/bitmap.height) }
+            }
+            files.copy(text = recognized.text, regions = regions)
+        } finally {
+            if (bitmap !== decoded) bitmap.recycle()
+            decoded.recycle()
         }
     }
 

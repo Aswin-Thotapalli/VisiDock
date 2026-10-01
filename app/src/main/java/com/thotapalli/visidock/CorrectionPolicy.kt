@@ -1,6 +1,10 @@
 package com.thotapalli.visidock
 
 data class LearnedLabel(val phrase: String, val field: String, val cardId: String)
+data class CorrectionActivity(
+    val cardId: String, val field: String, val before: String, val after: String,
+    val timestamp: Long, val eligibleForLearning: Boolean
+)
 
 /** Learn field labels, never transplant a previous person's details into a different card. */
 object CorrectionPolicy {
@@ -11,6 +15,17 @@ object CorrectionPolicy {
     }
     fun fields(card: Card) = linkedMapOf("name" to card.name,"role" to card.role,"company" to card.company,
         "phone" to card.contactPhones.joinToString("; ") { it.number },"email" to card.email,"website" to card.website,"address" to card.address)
+
+    /** Activity includes typo fixes and removals even when they cannot safely become training labels. */
+    fun activity(before: Card, after: Card, timestamp: Long = System.currentTimeMillis()): List<CorrectionActivity> {
+        val old = fields(before).toMutableMap().apply { put("phone", before.contactPhones.joinToString("; ") { "${it.label}: ${it.number}" }) }
+        val current = fields(after).toMutableMap().apply { put("phone", after.contactPhones.joinToString("; ") { "${it.label}: ${it.number}" }) }
+        val eligible = learn(before, after).map { it.field }.toSet()
+        return current.mapNotNull { (field, value) ->
+            if (old.getValue(field).trim() == value.trim()) null
+            else CorrectionActivity(after.id, field, old.getValue(field), value, timestamp, field in eligible)
+        }
+    }
 
     fun learn(proposed: Card, corrected: Card): List<LearnedLabel> {
         val evidence=proposed.rawText+"\n"+proposed.backRawText

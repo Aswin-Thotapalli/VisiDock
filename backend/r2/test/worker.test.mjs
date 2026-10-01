@@ -5,6 +5,33 @@ import { createWorker, verifyFirebaseToken, readManifest } from '../src/worker.m
 
 const jpeg = new Uint8Array([255,216,255,224]);
 
+test('replacement revisions preserve old reads and prohibit overwriting or deleting retained images', async () => {
+  const file='preview-r'+'a'.repeat(32)+'.jpg';
+  const f=fixture({state:{imagePath:`users/alice/cards/one/${file}`,previousRecord:{imagePath:'users/alice/cards/one/preview.jpg'}}});
+  assert.equal((await f.send('GET',{file:'preview.jpg'})).status,200);
+  assert.equal((await f.send('PUT',{file:'preview.jpg'})).status,404);
+  assert.equal((await f.send('DELETE',{file:'preview.jpg'})).status,409);
+  assert.equal((await f.send('PUT',{file})).status,204);
+  assert.equal((await f.send('GET',{file})).status,409);
+  f.state.status='ready';
+  assert.equal((await f.send('GET',{file})).status,200);
+  assert.equal((await f.send('DELETE',{file})).status,409);
+  assert.equal((await f.send('DELETE',{file:'preview.jpg'})).status,204);
+  delete f.state.previousRecord;
+  assert.equal((await f.send('DELETE',{file:'preview.jpg'})).status,409);
+});
+test('replacement rollback may remove only new revision and rejects cross-owner previous paths',async()=>{
+  const file='back-original-r'+'b'.repeat(32);
+  const f=fixture({state:{backOriginalPath:`users/alice/cards/one/${file}`,previousRecord:{originalPath:'users/alice/cards/one/original',imagePath:'users/alice/cards/one/preview.jpg'}}});
+  assert.equal((await f.send('DELETE',{file})).status,409);
+  f.state.status='rollingBack';
+  assert.equal((await f.send('DELETE',{file})).status,204);
+  assert.equal((await f.send('DELETE',{file:'original'})).status,409);
+  assert.equal((await f.send('PUT',{file:'original'})).status,409);
+  f.state.previousRecord.imagePath='users/bob/cards/one/preview.jpg';
+  assert.equal((await f.send('GET',{file:'preview.jpg'})).status,409);
+});
+
 test('back images require their own owner manifest and remain private through their lifecycle', async () => {
   for (const file of ['back-original', 'back-preview.jpg']) {
     const field = file === 'back-original' ? 'backOriginalPath' : 'backImagePath';
@@ -85,16 +112,39 @@ test('manifest recheck catches deletion during body upload; errors do not disclo
   const broken=fixture({dependencies:{manifest:async()=>{throw Error('secret backend credential')}}});
   const response=await broken.send(); assert.equal(response.status,503); assert.equal((await response.text()).includes('secret'),false);
 });
-test('deletion or unavailable manifest after PUT compensates by deleting the new object', async () => {
-  for(const finalState of ['deleting','missing','wrong-path']) {
+test('confirmed deletion or changed manifest after PUT compensates by deleting the new object', async () => {
+  for(const finalState of ['deleting','rollingBack','wrong-path']) {
     let reads=0;
     const f=fixture({dependencies:{manifest:async()=>{
       reads++;
-      if(reads===3 && finalState==='missing') throw Error('Gone');
-      return {status:reads===3 && finalState==='deleting'?'deleting':'uploading',imagePath:reads===3 && finalState==='wrong-path'?'other':'users/alice/cards/one/preview.jpg'};
+      return {status:reads===3 && finalState!=='wrong-path'?finalState:'uploading',imagePath:reads===3 && finalState==='wrong-path'?'other':'users/alice/cards/one/preview.jpg'};
     }}});
-    const response=await f.send(); assert.equal(response.status,finalState==='missing'?503:409);
+    const response=await f.send(); assert.equal(response.status,409);
     assert.deepEqual(f.calls.map(c=>c[0]),['put','delete']); assert.equal(f.calls[1][1],'users/alice/cards/one/preview.jpg');
+  }
+});
+test('unavailable post-PUT verification preserves revision when a retry may already have committed it',async()=>{
+  const file='preview-r'+'c'.repeat(32)+'.jpg';
+  for(const failure of ['network','malformed']) {
+    let reads=0;
+    const f=fixture({dependencies:{manifest:async()=>{
+      if(++reads===3) {
+        if(failure==='network') throw Error('Transient Firestore outage');
+        return {};
+      }
+      return {status:'uploading',imagePath:`users/alice/cards/one/${file}`};
+    }}});
+    assert.equal((await f.send('PUT',{file})).status,503);
+    assert.deepEqual(f.calls.map(call=>call[0]),['put']);
+    assert.equal(f.calls[0][1],`users/alice/cards/one/${file}`);
+  }
+});
+test('late completed upload cannot delete an image retained by a newer replacement',async()=>{
+  for(const status of ['uploading','ready','rollingBack']) {
+    let reads=0;const previous='users/alice/cards/one/preview.jpg';
+    const f=fixture({dependencies:{manifest:async()=>++reads<3?{status:'uploading',imagePath:previous}:{status,imagePath:'users/alice/cards/one/preview-r'+'d'.repeat(32)+'.jpg',previousRecord:{imagePath:previous}}}});
+    assert.equal((await f.send()).status,204);
+    assert.deepEqual(f.calls.map(call=>call[0]),['put']);
   }
 });
 test('Firestore manifest uses same bearer and owner path; rejects denied or unavailable backend', async () => {

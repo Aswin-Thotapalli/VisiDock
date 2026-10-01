@@ -54,9 +54,9 @@ class PersonalLearning(private val context:Context,private val uid:String) {
         return Array(w.length()){i ->val row=w.getJSONArray(i);require(row.length()==PersonalClassifier.DIM);FloatArray(row.length()){row.getDouble(it).toFloat()}}
     }
     private fun generation()=preferences.getLong("generation",0L)
-    fun remember(before:Card,after:Card,regions:List<OcrRegion>,expectedGeneration:Long?=null) {
+    fun remember(before:Card,after:Card,regions:List<OcrRegion>,expectedGeneration:Long?=null,isCurrent:()->Boolean = {true}) {
         val initialGeneration=synchronized(lock) {
-            if(!preferences.getBoolean("enabled",true) || (expectedGeneration!=null && expectedGeneration!=generation())) return
+            if(!preferences.getBoolean("enabled",true) || (expectedGeneration!=null && expectedGeneration!=generation()) || !isCurrent()) return
             generation()
         }
         val corrections=CorrectionPolicy.learn(before,after)
@@ -73,7 +73,7 @@ class PersonalLearning(private val context:Context,private val uid:String) {
                 PersonalClassifier.features(label.phrase,region,encoder.encode(label.phrase)))
         }}
         synchronized(lock) {
-            if(!preferences.getBoolean("enabled",true)||generation()!=initialGeneration) return
+            if(!preferences.getBoolean("enabled",true)||generation()!=initialGeneration || !isCurrent()) return
             val data=read();val existing=examples(data)
             val removed=existing.any {it.cardId==after.id && it.field in changed}
             val merged=(existing.filterNot {it.cardId==after.id && it.field in changed}+additions).takeLast(280)

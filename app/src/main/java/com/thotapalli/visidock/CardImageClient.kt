@@ -14,27 +14,67 @@ import java.net.URI
 import java.net.URL
 import java.util.Timer
 import java.util.TimerTask
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import com.google.firebase.FirebaseApp
+import java.security.MessageDigest
 
 /** Only the Firebase ID token crosses the wire; object keys and account ownership are server-derived. */
 internal class CardImageClient(
     private val auth: FirebaseAuth,
     private val baseUrl: String = BuildConfig.IMAGE_API_URL
 ) {
+    private val cache = File(FirebaseApp.getInstance().applicationContext.cacheDir, "card-images").apply { mkdirs() }
+    private val memory = object : android.util.LruCache<String, ByteArray>(24 * 1024 * 1024) {
+        override fun sizeOf(key: String, value: ByteArray) = value.size
+    }
+    private val locks = Array(32) { Mutex() }
+    @Volatile private var cacheGeneration=0L
+    private fun key(uid: String, cardId: String, image: String) = MessageDigest.getInstance("SHA-256").digest("$uid/$cardId/$image".toByteArray()).joinToString("") { "%02x".format(it) }
+    @Synchronized fun clearCache() {cacheGeneration++;memory.evictAll();cache.listFiles()?.forEach {it.delete()} }
     fun validateConfiguration() { imageApiBase(baseUrl) }
 
     suspend fun put(uid: String, cardId: String, image: String, file: File, mime: String) {
         require(file.isFile && file.length() in 1..ImagePipeline.MAX_ORIGINAL) { "Choose an image smaller than 20 MB." }
-        require(!image.endsWith("preview.jpg") || (file.length() <= MAX_DOWNLOAD && mime == "image/jpeg")) { "The preview must be a JPEG image smaller than 6 MB." }
+        require(!image.contains("preview") || (file.length() <= MAX_DOWNLOAD && mime == "image/jpeg")) { "The preview must be a JPEG image smaller than 6 MB." }
         require(mime in setOf("image/jpeg", "image/png", "image/webp")) { "Choose a JPEG, PNG or WebP image." }
-        request(uid, cardId, image, "PUT", file, mime)
+        val generation=cacheGeneration
+        val key=key(uid,cardId,image)
+        locks[(key.hashCode() and Int.MAX_VALUE)%locks.size].withLock {
+            request(uid, cardId, image, "PUT", file, mime)
+            check(auth.currentUser?.uid==uid) {"Your session changed. Sign in again."}
+            if (image.contains("preview")) withContext(Dispatchers.IO) {remember(key,file.readBytes(),generation)}
+        }
     }
 
     suspend fun delete(uid: String, cardId: String, image: String) {
-        request(uid, cardId, image, "DELETE")
+        val key=key(uid,cardId,image)
+        locks[(key.hashCode() and Int.MAX_VALUE)%locks.size].withLock {
+            request(uid, cardId, image, "DELETE")
+            memory.remove(key);File(cache,key).delete()
+        }
     }
 
-    suspend fun get(uid: String, cardId: String, image: String): ByteArray =
-        checkNotNull(request(uid, cardId, image, "GET"))
+    suspend fun get(uid: String, cardId: String, image: String): ByteArray = withContext(Dispatchers.IO) {
+        check(auth.currentUser?.uid == uid) { "Your session changed. Sign in again." }
+        val key=key(uid,cardId,image)
+        val generation=cacheGeneration
+        locks[(key.hashCode() and Int.MAX_VALUE)%locks.size].withLock {
+            val bytes=memory.get(key) ?: runCatching {File(cache,key).takeIf {it.isFile}?.let {it.setLastModified(System.currentTimeMillis());it.readBytes()}}.getOrNull() ?: checkNotNull(request(uid,cardId,image,"GET")).also {remember(key,it,generation)}
+            check(auth.currentUser?.uid == uid) { "Your session changed. Sign in again." }
+            synchronized(this@CardImageClient) {if(image.contains("preview") && generation==cacheGeneration) memory.put(key,bytes)}
+            bytes
+        }
+    }
+    @Synchronized private fun remember(key:String,bytes:ByteArray,generation:Long) {
+        if(generation!=cacheGeneration) return
+        if(bytes.size<=6*1024*1024) memory.put(key,bytes)
+        val target=File(cache,key);val temp=File(cache,"$key.tmp")
+        runCatching {temp.writeBytes(bytes);if(!temp.renameTo(target)) temp.delete()
+            var size=cache.listFiles().orEmpty().sumOf {it.length()}
+            for(file in cache.listFiles().orEmpty().sortedBy {it.lastModified()}) {if(size<=96L*1024*1024) break;size-=file.length();file.delete()}
+        }
+    }
 
     private suspend fun request(
         uid: String, cardId: String, image: String, method: String,
@@ -79,7 +119,8 @@ internal class CardImageClient(
             val status = connection.responseCode
             if (status !in 200..299) throw IOException(imageApiError(status))
             if (method != "GET") return@withContext null
-            require(connection.contentLengthLong <= MAX_DOWNLOAD) { "This card image is too large to display." }
+            val limit=if(image.contains("preview")) MAX_DOWNLOAD else ImagePipeline.MAX_ORIGINAL
+            require(connection.contentLengthLong <= limit) { "This card image is too large to display." }
             val bytes = ByteArrayOutputStream()
             connection.inputStream.use { input ->
                 val buffer = ByteArray(32 * 1024)
@@ -87,7 +128,7 @@ internal class CardImageClient(
                     currentCoroutineContext().ensureActive()
                     val count = input.read(buffer)
                     if (count < 0) break
-                    require(bytes.size().toLong() + count <= MAX_DOWNLOAD) { "This card image is too large to display." }
+                    require(bytes.size().toLong() + count <= limit) { "This card image is too large to display." }
                     bytes.write(buffer, 0, count)
                 }
             }
@@ -112,7 +153,7 @@ internal fun imageApiBase(value: String): URI {
 
 internal fun imageApiEndpoint(base: String, cardId: String, image: String): URL {
     require(cardId.matches(Regex("[A-Za-z0-9_-]{1,128}"))) { "This card has an invalid identifier." }
-    require(image in setOf("original", "preview.jpg", "back-original", "back-preview.jpg")) { "This image type is not supported." }
+    require(image.matches(Regex("(?:back-)?(?:original(?:-r[a-f0-9]{32})?|preview(?:-r[a-f0-9]{32})?\\.jpg)"))) { "This image type is not supported." }
     return URL(imageApiBase(base).toASCIIString().trimEnd('/') + "/v1/cards/$cardId/$image")
 }
 

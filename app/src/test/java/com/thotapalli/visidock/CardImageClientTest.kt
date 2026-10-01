@@ -17,6 +17,13 @@ class CardImageClientTest {
             assertFalse(runCatching { imageApiEndpoint("https://images.example.com", id, "original") }.isSuccess)
         }
         assertFalse(runCatching { imageApiEndpoint("https://images.example.com", "card-123", "../original") }.isSuccess)
+        val version="a".repeat(32)
+        listOf("original-r$version","preview-r$version.jpg","back-original-r$version","back-preview-r$version.jpg").forEach {file->
+            assertEquals("https://images.example.com/v1/cards/card-123/$file",imageApiEndpoint("https://images.example.com","card-123",file).toString())
+        }
+        listOf("preview-rabc.jpg","original-r${"z".repeat(32)}","preview-r$version.png").forEach {file->
+            assertFalse(runCatching {imageApiEndpoint("https://images.example.com","card-123",file)}.isSuccess)
+        }
     }
 
     @Test fun serviceFailuresAreActionableWithoutReflectingServerContent() {

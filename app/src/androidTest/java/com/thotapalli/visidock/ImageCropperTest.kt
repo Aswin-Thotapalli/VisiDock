@@ -18,6 +18,75 @@ import org.junit.Test
 import java.io.File
 
 class ImageCropperTest {
+    @Test fun detectsLightAndDarkPerspectiveCardsWithoutSelectingPrintedText() {
+        for ((background,card) in listOf(Color.rgb(22,45,80) to Color.WHITE,Color.rgb(225,225,220) to Color.rgb(30,45,70))) {
+            val image=Bitmap.createBitmap(640,480,Bitmap.Config.ARGB_8888)
+            val expected=listOf(.15f,.2f,.85f,.15f,.82f,.8f,.12f,.85f)
+            Canvas(image).apply {
+                drawColor(background)
+                drawPath(Path().apply {moveTo(96f,96f);lineTo(544f,72f);lineTo(525f,384f);lineTo(77f,408f);close()},Paint().apply {color=card})
+                drawText("Ananya Rao",180f,200f,Paint().apply {color=background;textSize=32f})
+                drawText("hello@example.com",180f,250f,Paint().apply {color=background;textSize=20f})
+            }
+            try {
+                val actual=ImageCropper.detect(image)
+                assertNotNull("A high contrast card should have a proposal",actual)
+                expected.zip(actual!!).forEach {(wanted,found)->assertEquals(wanted,found,.025f)}
+            } finally {image.recycle()}
+        }
+    }
+    @Test fun findsRotatedPerspectiveCardOnTexturedAndLowContrastSurfaces() {
+        val expected=listOf(.20f,.16f,.88f,.29f,.76f,.84f,.10f,.66f)
+        for(lowContrast in listOf(false,true)) {
+            val image=Bitmap.createBitmap(800,600,Bitmap.Config.ARGB_8888)
+            val canvas=Canvas(image)
+            // Uneven illumination and wood-like stripes invalidate a single border-color assumption.
+            for(y in 0 until image.height) {
+                val base=if(lowContrast) 178 else 70
+                val level=base+y*24/image.height
+                canvas.drawLine(0f,y.toFloat(),800f,y.toFloat(),Paint().apply {color=Color.rgb(level,level-5,level-12)})
+            }
+            for(x in 0..800 step 13) canvas.drawLine(x.toFloat(),0f,x+70f,600f,
+                Paint().apply {color=if(lowContrast) Color.rgb(158,156,150) else Color.rgb(110,89,62);strokeWidth=2f})
+            val shape=Path().apply {moveTo(160f,96f);lineTo(704f,174f);lineTo(608f,504f);lineTo(80f,396f);close()}
+            canvas.drawPath(shape,Paint().apply {color=if(lowContrast) Color.rgb(213,212,208) else Color.rgb(243,244,237)})
+            canvas.save();canvas.clipPath(shape)
+            canvas.rotate(10f,400f,300f)
+            canvas.drawText("Asha Menon",230f,250f,Paint().apply {color=Color.rgb(25,43,72);textSize=39f})
+            canvas.drawText("DESIGN DIRECTOR",230f,295f,Paint().apply {color=Color.rgb(65,76,85);textSize=20f})
+            canvas.drawText("asha@example.test",230f,360f,Paint().apply {color=Color.rgb(25,43,72);textSize=22f})
+            canvas.restore()
+            try {
+                val actual=ImageCropper.detect(image)
+                assertNotNull("Card edges should survive textured background; lowContrast=$lowContrast",actual)
+                expected.zip(actual!!).forEach {(wanted,found)->assertEquals(wanted,found,.035f)}
+                val cropped=ImageCropper.warp(image,actual)
+                try {assertTrue("Perspective result must be a landscape card",cropped.width>cropped.height)}
+                finally {cropped.recycle()}
+            } finally {image.recycle()}
+        }
+    }
+
+    @Test fun openEdgesAndBackgroundTextureDoNotFormAnAutomaticCard() {
+        val image=Bitmap.createBitmap(640,480,Bitmap.Config.ARGB_8888)
+        Canvas(image).apply {
+            drawColor(Color.rgb(191,177,153))
+            for(x in 0..640 step 17) drawLine(x.toFloat(),0f,x+80f,480f,
+                Paint().apply {color=Color.rgb(153,133,107);strokeWidth=3f})
+            // Three disconnected edges must not be treated as a confirmed four-corner object.
+            drawLine(100f,100f,520f,100f,Paint().apply {color=Color.WHITE;strokeWidth=3f})
+            drawLine(100f,100f,100f,360f,Paint().apply {color=Color.WHITE;strokeWidth=3f})
+        }
+        try {assertNull(ImageCropper.detect(image))} finally {image.recycle()}
+    }
+
+    @Test fun blankAndAmbiguousFullFrameImagesDoNotInventACrop() {
+        val image=Bitmap.createBitmap(400,300,Bitmap.Config.ARGB_8888)
+        try {image.eraseColor(Color.WHITE);assertNull(ImageCropper.detect(image))
+            Canvas(image).drawText("Just text",20f,100f,Paint().apply {color=Color.BLUE;textSize=24f})
+            assertNull(ImageCropper.detect(image))
+        } finally {image.recycle()}
+    }
     @Test fun stagedCropRestoresWithoutGalleryPermissionAndCancelDeletesOnlyPrivateCopy()=runBlocking {
         org.junit.Assume.assumeTrue(BuildConfig.DEMO)
         val app=InstrumentationRegistry.getInstrumentation().targetContext.applicationContext as android.app.Application

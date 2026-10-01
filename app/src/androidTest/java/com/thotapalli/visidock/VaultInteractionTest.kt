@@ -13,21 +13,38 @@ class VaultInteractionTest {
     @Before fun waitForCollection() {
         compose.waitUntil(10000) { compose.onAllNodesWithText("Cards").fetchSemanticsNodes().isNotEmpty() }
         compose.waitForIdle()
+        compose.onNodeWithText("List", substring=false).performClick()
+        compose.waitForIdle()
     }
+
+    private fun openAcknowledgedCardFromCase(label:String) {
+        compose.waitUntil(10000) {compose.onAllNodesWithContentDescription("Card case").fetchSemanticsNodes().isNotEmpty()}
+        compose.waitUntil(10000) {compose.onAllNodesWithText("Card saved").fetchSemanticsNodes().isEmpty()}
+        compose.waitForIdle()
+        compose.onNodeWithText("Case", substring=false).assertIsSelected()
+        compose.onNodeWithContentDescription("Card case").assertIsDisplayed()
+        // The saved card must be physically present in the case, not merely named
+        // by a receipt. Open card must then open that focused card.
+        compose.onNode(hasText(label) and hasClickAction() and hasAnyAncestor(hasContentDescription("Card case"))).assertIsDisplayed()
+        compose.onNodeWithText("Open card").performScrollTo().performClick()
+        compose.waitUntil(10000) {compose.onAllNodesWithContentDescription("Edit card").fetchSemanticsNodes().isNotEmpty()}
+        compose.waitForIdle()
+        compose.onNodeWithText(label).assertExists()
+    }
+
     @Test fun createEditAndDeleteConnection() {
         compose.onNodeWithContentDescription("Add card").performClick()
         compose.onNodeWithText("Enter details").performClick()
         compose.onNodeWithText("Full name").performTextInput("Test Connection")
         compose.onNodeWithText("Company").performTextInput("Test Company")
         compose.onNodeWithText("Save card").performClick()
-        compose.waitUntil(10000) { compose.onAllNodesWithContentDescription("Edit card").fetchSemanticsNodes().isNotEmpty() }
+        openAcknowledgedCardFromCase("Test Connection")
         compose.waitForIdle()
         compose.onNodeWithContentDescription("Edit card").performClick()
         compose.waitForIdle()
         compose.onNodeWithText("Full name").performTextReplacement("Updated Connection")
         compose.onNodeWithText("Save changes").performClick()
-        try { compose.waitUntil(10000) { compose.onAllNodesWithContentDescription("Edit card").fetchSemanticsNodes().isNotEmpty() } }
-        catch(e: Throwable) { compose.onRoot().printToLog("VisiDockSaveState"); throw e }
+        openAcknowledgedCardFromCase("Updated Connection")
         compose.onNodeWithText("Delete card").performScrollTo().performClick()
         compose.onNodeWithText("Delete permanently").performClick()
         compose.waitUntil(10000) { compose.onAllNodesWithText("Cards").fetchSemanticsNodes().isNotEmpty() }
@@ -51,19 +68,65 @@ class VaultInteractionTest {
         compose.onNodeWithText("Enter details").performClick()
         compose.onNodeWithText("Company").performScrollTo().performTextInput("Company-only Studio")
         compose.onNodeWithText("Save card").assertIsEnabled().performClick()
-        compose.waitUntil(10000) {compose.onAllNodesWithContentDescription("Edit card").fetchSemanticsNodes().isNotEmpty()}
+        openAcknowledgedCardFromCase("Company-only Studio")
         compose.onNodeWithContentDescription("Edit card").performClick()
         compose.onNode(hasText("Full name") and hasSetTextAction()).assert(
             SemanticsMatcher.expectValue(androidx.compose.ui.semantics.SemanticsProperties.EditableText,androidx.compose.ui.text.AnnotatedString("")))
         compose.onNode(hasText("Company-only Studio") and hasSetTextAction()).assertExists()
     }
     @Test fun favoritesAreExplicitAndSearchCanBeCleared() {
-        compose.onNodeWithContentDescription("Favorite Rohan Mehta").performClick()
+        compose.onNode(hasScrollToIndexAction()).performScrollToNode(hasContentDescription("Favorite Rohan Mehta"))
+        // The image makes a card taller than the available viewport. Finding its
+        // lazy-list item does not expose the star at the bottom of that item.
+        val favorite=compose.onNodeWithContentDescription("Favorite Rohan Mehta")
+        favorite.performScrollTo()
+        val list=compose.onNode(hasScrollToIndexAction())
+        val offset=favorite.fetchSemanticsNode().boundsInRoot.center.y-list.fetchSemanticsNode().boundsInRoot.center.y
+        list.performSemanticsAction(androidx.compose.ui.semantics.SemanticsActions.ScrollBy) {scroll->scroll(0f,offset)}
+        favorite.assertIsDisplayed().assertIsEnabled().performClick()
+        compose.waitUntil(10000) {
+            // Saving may reorder the demo repository's cards; find the confirmed
+            // selected control even if its row moved outside composition.
+            runCatching {list.performScrollToNode(hasContentDescription("Remove Rohan Mehta from favorites"))}.isSuccess
+        }
+        compose.onNodeWithContentDescription("Remove Rohan Mehta from favorites").assertIsEnabled()
         compose.onNodeWithText("Favorites").performClick()
-        compose.onNodeWithText("Rohan Mehta").assertExists()
+        compose.onNode(hasText("Favorites") and isSelectable()).assertIsSelected()
+        // Filtering runs on Dispatchers.Default. Compose idling alone can still see
+        // the old one-card result; await the rendered result, not a timing delay.
+        // Ananya starts favorited, so Rohan must produce exactly two favorites.
+        compose.waitUntil(10000) {compose.onAllNodesWithText("2 cards").fetchSemanticsNodes().isNotEmpty()}
+        compose.onNode(hasScrollToIndexAction()).performScrollToNode(hasText("Rohan Mehta"))
+        compose.onNodeWithText("Rohan Mehta").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Remove Rohan Mehta from favorites").assertIsEnabled()
         compose.onNodeWithText("Search names, companies or notes").performTextInput("Ananya")
+        // Exercise an actual completed search before clearing, not just a text edit.
+        compose.waitUntil(10000) {
+            compose.onAllNodesWithText("1 card").fetchSemanticsNodes().isNotEmpty() &&
+                compose.onAllNodesWithText("Searching on your device…").fetchSemanticsNodes().isEmpty()
+        }
+        compose.onNode(hasScrollToIndexAction()).performScrollToNode(hasText("Ananya Rao"))
+        compose.onNodeWithText("Ananya Rao").assertIsDisplayed()
+        compose.onNodeWithText("Rohan Mehta").assertDoesNotExist()
         compose.onNodeWithContentDescription("Clear search").performClick()
-        compose.onNodeWithText("Rohan Mehta").assertExists()
+        compose.waitUntil(10000) {compose.onAllNodesWithText("2 cards").fetchSemanticsNodes().isNotEmpty()}
+        compose.onNode(hasScrollToIndexAction()).performScrollToNode(hasText("Rohan Mehta"))
+        compose.onNodeWithText("Rohan Mehta").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Remove Rohan Mehta from favorites").assertIsEnabled()
+    }
+    @Test fun openingAndReturningToCardPreservesCollectionScroll() {
+        val list=compose.onNode(hasScrollToIndexAction())
+        list.performScrollToIndex(1)
+        compose.waitForIdle()
+        val before=list.fetchSemanticsNode().config[androidx.compose.ui.semantics.SemanticsProperties.VerticalScrollAxisRange].value()
+        assertTrue("Collection must be scrolled before opening a card",before>0f)
+        compose.onNode(hasText("Rohan Mehta") and hasClickAction()).performClick()
+        compose.waitUntil(10000) {compose.onAllNodesWithContentDescription("Back to collection").fetchSemanticsNodes().isNotEmpty()}
+        compose.onNodeWithContentDescription("Back to collection").performClick()
+        compose.waitUntil(10000) {compose.onAllNodes(hasScrollToIndexAction()).fetchSemanticsNodes().isNotEmpty()}
+        compose.waitForIdle()
+        val after=compose.onNode(hasScrollToIndexAction()).fetchSemanticsNode().config[androidx.compose.ui.semantics.SemanticsProperties.VerticalScrollAxisRange].value()
+        assertEquals("Returning should preserve the exact collection position",before,after,.001f)
     }
     @Test fun threePhoneNumbersStaySeparateAfterSaveAndEdit() {
         compose.onNodeWithContentDescription("Add card").performClick()
@@ -72,11 +135,13 @@ class VaultInteractionTest {
         compose.onNodeWithText("Number 1").performScrollTo().performTextInput("+91 98765 43210")
         compose.onNodeWithText("Label 1 (optional)").performScrollTo().performTextInput("Mobile")
         compose.onNodeWithText("Add number").performScrollTo().performClick()
+        compose.onNodeWithText("Number 2").assertIsFocused()
         compose.onNodeWithText("Number 2").performScrollTo().performTextInput("+91 80 2345 6789")
         compose.onNodeWithText("Add number").performScrollTo().performClick()
+        compose.onNodeWithText("Number 3").assertIsFocused()
         compose.onNodeWithText("Number 3").performScrollTo().performTextInput("+44 20 1234 5678")
         compose.onNodeWithText("Save card").performClick()
-        compose.waitUntil(10000) {compose.onAllNodesWithContentDescription("Edit card").fetchSemanticsNodes().isNotEmpty()}
+        openAcknowledgedCardFromCase("Multiple Phones")
         compose.onNodeWithContentDescription("Call Mobile +91 98765 43210").performScrollTo().assertExists()
         compose.onNodeWithContentDescription("Call phone 2 +91 80 2345 6789").performScrollTo().assertExists()
         compose.onNodeWithContentDescription("Call phone 3 +44 20 1234 5678").performScrollTo().assertExists()
@@ -85,7 +150,7 @@ class VaultInteractionTest {
         compose.onNodeWithContentDescription("Remove phone 2").performScrollTo().performClick()
         compose.onNodeWithText("Number 2").performScrollTo().assertTextContains("+44 20 1234 5678")
         compose.onNodeWithText("Save changes").performClick()
-        compose.waitUntil(10000) {compose.onAllNodesWithContentDescription("Edit card").fetchSemanticsNodes().isNotEmpty()}
+        openAcknowledgedCardFromCase("Multiple Phones")
         compose.onNodeWithContentDescription("Call phone 2 +44 20 1234 5678").performScrollTo().assertExists()
         compose.onNodeWithText("+91 80 2345 6789").assertDoesNotExist()
     }
@@ -101,5 +166,17 @@ class VaultInteractionTest {
             assertFalse(results.unavailable)
             assertEquals("factory",results.cards.firstOrNull()?.id)
         } finally {engine.close()}
+    }
+    @Test fun invalidWebsiteSaveRevealsFieldAndRetainsDraftUntilCorrected() {
+        compose.onNodeWithContentDescription("Add card").performClick()
+        compose.onNodeWithText("Enter details").performClick()
+        compose.onNodeWithText("Full name").performTextInput("Validation Person")
+        compose.onNodeWithText("Website").performScrollTo().performTextInput("person@example.test")
+        compose.onNodeWithText("Save card").performClick()
+        compose.waitUntil(10000) {compose.onAllNodesWithText("Enter a website here; email addresses belong above.").fetchSemanticsNodes().isNotEmpty()}
+        compose.onNodeWithText("Website").assertIsFocused().performTextReplacement("https://example.test")
+        compose.onNodeWithText("Save card").performClick()
+        openAcknowledgedCardFromCase("Validation Person")
+        compose.onNodeWithText("Validation Person").assertExists()
     }
 }

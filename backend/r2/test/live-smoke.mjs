@@ -61,8 +61,14 @@ async function cleanup(account) {
   if (account.manifestAttempted && !account.manifestDeleted) {
     await attempt(() => setStatus(account, 'deleting', `${account.label} cleanup`));
     let allImagesRemoved = true;
-    for (const image of images) {
-      try { await request(`${account.label} cleanup: delete ${image.file}`, objectUrl(account,image.file), { method:'DELETE', headers:bearer(account) }, [204]); }
+    let files=[];
+    try {
+      const manifest=(await (await request(`${account.label} cleanup: read manifest`,documentUrl(account),{headers:bearer(account)})).json()).fields;
+      const records=[manifest,manifest.previousRecord?.mapValue?.fields].filter(Boolean);
+      files=[...new Set(records.flatMap(record=>['imagePath','originalPath','backImagePath','backOriginalPath'].map(field=>record[field]?.stringValue).filter(Boolean).map(path=>path.split('/').at(-1))))];
+    } catch(error) {allImagesRemoved=false;failure=true;report(error.step || `${account.label}: cleanup manifest`,'CLEANUP_FAILED',error.status);}
+    for (const file of files) {
+      try { await request(`${account.label} cleanup: delete ${file}`, objectUrl(account,file), { method:'DELETE', headers:bearer(account) }, [204]); }
       catch (error) { allImagesRemoved=false; failure=true; report(error.step || `${account.label}: cleanup image`, 'CLEANUP_FAILED',error.status); }
     }
     // Preserve the deleting manifest if object cleanup fails, so cleanup can be retried.
@@ -92,6 +98,26 @@ try {
       if (!Buffer.from(await response.arrayBuffer()).equals(image.bytes)) throw new CheckFailure(`${account.label}: verify ${image.file} bytes`);
       report(`${account.label}: verify ${image.file} bytes`,'PASS');
     }
+  }
+  // Keep the old manifest until final cleanup so both revisions remain discoverable on failure.
+  const revision=randomUUID().replaceAll('-','');
+  const replacements=images.filter(image=>!image.file.startsWith('back-')).map(image=>({...image,file:image.file==='original'?`original-r${revision}`:`preview-r${revision}.jpg`}));
+  images.push(...replacements);
+  for(const account of [a,b]) {
+    const previous=(await (await request(`${account.label}: read previous manifest`,documentUrl(account),{headers:bearer(account)})).json()).fields;
+    const prefix=`users/${account.uid}/cards/${account.cardId}/`;
+    const fields={...previous,status:{stringValue:'uploading'},sourceScanId:{stringValue:randomUUID()},uploadStartedAt:{integerValue:String(Date.now())},previousRecord:{mapValue:{fields:previous}},
+      originalPath:{stringValue:prefix+replacements[0].file},imagePath:{stringValue:prefix+replacements[1].file}};
+    await request(`${account.label}: begin front replacement`,documentUrl(account),{method:'PATCH',headers:jsonHeaders(account),body:JSON.stringify({fields})});
+    await request(`${account.label}: old front readable during replacement`,objectUrl(account,'preview.jpg'),{headers:bearer(account)});
+    await request(`${account.label}: old front protected from overwrite`,objectUrl(account,'preview.jpg'),{method:'PUT',headers:{...bearer(account),'Content-Type':'image/jpeg'},body:images[1].bytes},[404]);
+    for(const image of replacements) await request(`${account.label}: upload revision ${image.file}`,objectUrl(account,image.file),{method:'PUT',headers:{...bearer(account),'Content-Type':image.type},body:image.bytes},[204]);
+    await setStatus(account,'ready');
+    for(const image of replacements) {
+      const response=await request(`${account.label}: read revision ${image.file}`,objectUrl(account,image.file),{headers:bearer(account)});
+      if(!Buffer.from(await response.arrayBuffer()).equals(image.bytes)) throw new CheckFailure(`${account.label}: revision bytes`);
+    }
+    await request(`${account.label}: unchanged back retained`,objectUrl(account,'back-preview.jpg'),{headers:bearer(account)});
   }
   for (const image of images) {
     await request(`Isolation: B cannot read A ${image.file}`,objectUrl(a,image.file),{headers:bearer(b)},[404]);

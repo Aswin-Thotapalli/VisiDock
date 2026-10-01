@@ -18,6 +18,9 @@ object VisualExtraction {
         when printed. Join address lines with newlines. Check both sides and the footer before finishing.
         Share company/address/website only when clearly common, never guess between different offices.
         Use one email and website; put extras or uncertainty in optional brief "warnings" array.
+        Inspect @ and dots closely in the image. An email requires a printed @; a website is not an email.
+        Never derive a website from an email domain or invent @ from an ambiguous symbol. Leave it empty
+        and warn when unreadable. Preserve separate printed website and email even if their domains match.
         If no person is printed, return one company contact without a name.
     """.trimIndent()
 
@@ -71,13 +74,41 @@ object VisualExtraction {
             }
             val distinctPhones=phones.distinctBy { it.number.filter(Char::isDigit).ifEmpty { it.number } }
             require(distinctPhones.size<=12)
+            val channels = ContactChannels.resolve(field("email", 300), field("website", 300),
+                frontText + "\n" + backText, allowUnassigned = array.length() == 1)
+            warnings += channels.warnings.map { "Person ${index + 1}: $it" }
+            val proposedAddress=field("address",1000)
+            val address=withoutUnprintedAddressCompletion(proposedAddress,frontText+"\n"+backText)
+            if(address!=proposedAddress) warnings += "Person ${index + 1}: an unprinted address ending was removed. Check the remaining address against the photograph."
             Card(id = UUID.randomUUID().toString(), name = field("name", 200), role = field("role", 300),
-                company = field("company", 300), phone = distinctPhones.firstOrNull()?.number.orEmpty(), phones=distinctPhones, email = field("email", 300),
-                website = field("website", 300), address = field("address", 1000),
+                company = field("company", 300), phone = distinctPhones.firstOrNull()?.number.orEmpty(), phones=distinctPhones, email = channels.email,
+                website = channels.website, address = address,
                 rawText = frontText.take(12000), backRawText = backText.take(12000))
         }
         // Do not merge two people merely because they share an office email or switchboard.
         return VisualProposal(contacts, warnings.distinct())
+    }
+
+    /** Remove only a model-added trailing component when the complete remaining
+     * address is a contiguous printed span. Never assemble an address from scattered
+     * tokens, or discard a suffix that OCR actually contains elsewhere on the card. */
+    private fun withoutUnprintedAddressCompletion(value:String,evidence:String):String {
+        fun canonical(text:String)=text.lowercase(java.util.Locale.ROOT)
+            .replace(Regex("[^\\p{L}\\p{N}]+")," ").trim()
+        val printed=" "+canonical(evidence)+" "
+        fun appears(text:String)=canonical(text).let {it.isNotEmpty() && " $it " in printed}
+        if(value.isBlank() || appears(value)) return value
+        val separators=Regex("[,\\n]").findAll(value).map {it.range.first}.toList()
+        for(cut in separators.asReversed()) {
+            val prefix=value.take(cut).trimEnd(' ', '\r', '\n', ',')
+            val suffix=value.substring(cut+1)
+            // A substantial address prefix prevents a name or bare postal code
+            // elsewhere in OCR from becoming a replacement address.
+            if(prefix.length<12 || !prefix.any(Char::isDigit) || canonical(prefix).split(' ').size<3) continue
+            val endings=suffix.split(Regex("[,\\n]")).filter(String::isNotBlank)
+            if(appears(prefix) && endings.isNotEmpty() && endings.none(::appears)) return prefix
+        }
+        return value
     }
 
     /** Keep footer addresses within the fixed context budget as well as the header identity. */

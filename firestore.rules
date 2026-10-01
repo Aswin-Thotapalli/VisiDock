@@ -21,7 +21,7 @@ service cloud.firestore {
       let d = request.resource.data;
       let phones = d.get('phones', []);
       let prefix = 'users/' + uid + '/cards/' + id + '/';
-      return d.keys().hasOnly(['name','role','company','phone','phones','email','address','website','notes','rawText','imagePath','originalPath','favorite','createdAt','status','uploadStartedAt','backImagePath','backOriginalPath','backRawText','sourceScanId'])
+      return d.keys().hasOnly(['name','role','company','phone','phones','email','address','website','notes','rawText','imagePath','originalPath','favorite','createdAt','status','uploadStartedAt','backImagePath','backOriginalPath','backRawText','sourceScanId','previousRecord'])
         && d.keys().hasAll(['name','role','company','phone','email','address','website','notes','rawText','imagePath','originalPath','favorite','createdAt','status'])
         && text(d.get('sourceScanId',''),36)
         && text(d.name,200)
@@ -36,27 +36,36 @@ service cloud.firestore {
         && text(d.notes,4000)
         && text(d.rawText,12000)
         && text(d.get('backRawText',''),12000)
-        && ((d.get('backImagePath','') == '' && d.get('backOriginalPath','') == '') || (d.get('backImagePath','') == prefix + 'back-preview.jpg' && d.get('backOriginalPath','') == prefix + 'back-original'))
+        && ((d.get('backImagePath','') == '' && d.get('backOriginalPath','') == '') || (d.get('backImagePath','').matches(prefix + 'back-preview(-r[a-f0-9]{32})?[.]jpg') && d.get('backOriginalPath','').matches(prefix + 'back-original(-r[a-f0-9]{32})?')))
         && d.favorite is bool && d.createdAt is int && d.createdAt > 0
         && d.createdAt <= request.time.toMillis() + 300000
-        && d.status in ['uploading','ready','deleting']
+        && d.status in ['uploading','ready','deleting','rollingBack']
         && (!('uploadStartedAt' in d) || (d.uploadStartedAt is int && d.uploadStartedAt > 0 && d.uploadStartedAt <= request.time.toMillis() + 300000))
         && ((d.imagePath == '' && d.originalPath == '') ||
-          (d.imagePath == prefix + 'preview.jpg'
-          && d.originalPath == prefix + 'original'));
+          (d.imagePath.matches(prefix + 'preview(-r[a-f0-9]{32})?[.]jpg')
+          && d.originalPath.matches(prefix + 'original(-r[a-f0-9]{32})?')));
     }
     match /users/{uid}/cards/{id} {
       allow read: if owner(uid);
-      allow create: if owner(uid) && valid(uid, id) && request.resource.data.status in ['uploading','ready'];
+      allow create: if owner(uid) && valid(uid, id) && !('previousRecord' in request.resource.data) && request.resource.data.status in ['uploading','ready'];
       allow update: if owner(uid) && valid(uid, id)
         && (resource.data.status != 'deleting' || request.resource.data.status == 'deleting')
-        && (resource.data.status != 'ready' || request.resource.data.status != 'uploading')
-        && request.resource.data.get('sourceScanId','') == resource.data.get('sourceScanId','')
         && request.resource.data.createdAt == resource.data.createdAt
+        && (
+          (resource.data.status == 'ready' && request.resource.data.status == 'uploading'
+            && !('previousRecord' in resource.data)
+            && request.resource.data.get('previousRecord', {}) == resource.data
+            && request.resource.data.get('sourceScanId','') != resource.data.get('sourceScanId',''))
+          || (resource.data.status == 'rollingBack' && request.resource.data == resource.data.get('previousRecord', {}))
+          || ((resource.data.status != 'ready' || request.resource.data.status != 'uploading')
+        && (resource.data.status != 'rollingBack' || request.resource.data.status in ['rollingBack','deleting'])
+        && (request.resource.data.status != 'rollingBack' || resource.data.status in ['uploading','rollingBack'])
+        && request.resource.data.get('sourceScanId','') == resource.data.get('sourceScanId','')
+        && (!('previousRecord' in request.resource.data) || request.resource.data.previousRecord == resource.data.get('previousRecord', {}))
         && request.resource.data.imagePath == resource.data.imagePath
         && request.resource.data.originalPath == resource.data.originalPath
         && request.resource.data.get('backImagePath','') == resource.data.get('backImagePath','')
-        && request.resource.data.get('backOriginalPath','') == resource.data.get('backOriginalPath','');
+        && request.resource.data.get('backOriginalPath','') == resource.data.get('backOriginalPath','')));
       allow delete: if owner(uid) && resource.data.status == 'deleting';
     }
   }

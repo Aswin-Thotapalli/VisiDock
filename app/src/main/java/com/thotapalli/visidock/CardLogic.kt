@@ -41,8 +41,7 @@ object CardLogic {
     private val companyPattern = Regex("\\b(labs?|solutions|technologies|technology|industries|limited|ltd|llp|pvt|studio|systems|group|inc|company)\\b", RegexOption.IGNORE_CASE)
     fun extract(text: String): Card {
         val lines = text.lines().map(String::trim).filter(String::isNotBlank)
-        val email = emailPattern.find(text)?.value.orEmpty()
-        val withoutEmail = text.replace(emailPattern, "")
+        val email = ContactChannels.emails(text).firstOrNull().orEmpty()
         val role = lines.firstOrNull { rolePattern.containsMatchIn(it) }.orEmpty()
         val company = lines.firstOrNull { companyPattern.containsMatchIn(it) && it != role }.orEmpty()
         val candidates = lines.filter { it.length in 3..80 && it.any(Char::isLetter) && !it.contains('@') && it.none(Char::isDigit) && !webPattern.containsMatchIn(it) && it != role && it != company }
@@ -51,7 +50,7 @@ object CardLogic {
         return Card(name = candidates.firstOrNull().orEmpty(), role = role,
             company = company,
             phone = numbers.firstOrNull()?.number.orEmpty(), phones = numbers,
-            email = email, website = webPattern.find(withoutEmail)?.value.orEmpty(), address = lines.filter { Regex("(?i)\\b(road|street|avenue|lane|floor|building|nagar|colony|sector|cross|main|district|pin|pincode)\\b|\\b[1-9][0-9]{5}\\b").containsMatchIn(it) && !emailPattern.containsMatchIn(it) && !webPattern.containsMatchIn(it) }.joinToString("\n"), rawText = text.take(12000))
+            email = email, website = ContactChannels.websites(text).firstOrNull().orEmpty(), address = lines.filter { Regex("(?i)\\b(road|street|avenue|lane|floor|building|nagar|colony|sector|cross|main|district|pin|pincode)\\b|\\b[1-9][0-9]{5}\\b").containsMatchIn(it) && !emailPattern.containsMatchIn(it) && !webPattern.containsMatchIn(it) }.joinToString("\n"), rawText = text.take(12000))
     }
     fun validate(card: Card): String? = when {
         card.name.isBlank() && card.company.isBlank() -> "Add a person or company name so you can find this card again."
@@ -64,7 +63,8 @@ object CardLogic {
         card.address.length > 1000 -> "Keep the address under 1,000 characters."
         card.notes.length > 4000 -> "Keep notes under 4,000 characters."
         card.rawText.length > 12000 || card.backRawText.length > 12000 -> "Keep recognized text under 12,000 characters."
-        card.email.isNotBlank() && !emailPattern.matches(card.email.trim()) -> "Check the email address, or leave it empty."
+        card.email.isNotBlank() && ContactChannels.email(card.email) != card.email.trim() -> "Check the email address, or leave it empty."
+        card.website.isNotBlank() && ContactChannels.website(card.website) != card.website.trim() -> "Check the website. Put email addresses in the email field."
         else -> null
     }
     private val stop = setOf("find", "show", "me", "all", "the", "a", "an", "who", "was", "that", "from", "at", "in", "i", "met", "person", "card", "cards", "contact", "contacts", "whose", "scanned", "with", "and", "for", "is", "saved", "someone", "please")

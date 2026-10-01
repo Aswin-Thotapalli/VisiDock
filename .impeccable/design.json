@@ -1,0 +1,21 @@
+{
+  "platform": "android",
+  "direction": "Physical card continuity, deep-blue Android interface",
+  "mode": "operate",
+  "tokens": {
+    "primaryLight": "#2455CE",
+    "primaryDark": "#A9C5FF",
+    "canvasLight": "#F4F8FF",
+    "canvasDark": "#071D49",
+    "identityPanel": "#102C60",
+    "cameraAccent": "#99DDEB",
+    "gutterDp": 24,
+    "radiiDp": [8, 12, 16],
+    "spacingDp": [8, 12, 16, 20, 24, 32],
+    "motionMs": {"press": 90, "reflow": 220, "navigation": 320, "velocityProjection": 120},
+    "springs": {"sharedCard": {"stiffness": 420, "damping": 0.92}, "cardFlip": {"stiffness": 290, "damping": 0.82}, "buttonRelease": {"stiffness": 560, "damping": 0.76}},
+    "easing": [0.2, 0, 0, 1]
+  },
+  "constraints": ["No black UI surfaces", "Respect Android animator scale", "No artificial reading delay", "Actual front and back photographs", "Account-scoped image caching"],
+  "source": "DESIGN.md"
+}
