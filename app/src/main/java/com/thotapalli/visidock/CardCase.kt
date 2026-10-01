@@ -206,7 +206,7 @@ private val CaseRim=Color(0xFF82BCE7)
     }
 }
 
-/** Recessed tooling: upper cavity shadow and lower reflected edge, not white ink. */
+/** Gold foil follows the embossed glyph relief and the leather shell lighting. */
 @Composable private fun CaseInscription(ownerName:String,modifier:Modifier=Modifier) {
     val label=remember(ownerName) {caseInscription(ownerName)}
     Box(modifier.fillMaxWidth().height(32.dp).semantics {contentDescription=label}.drawWithCache {
@@ -238,13 +238,18 @@ private val CaseRim=Color(0xFF82BCE7)
         val y=(size.height-paint.fontMetrics.ascent-paint.fontMetrics.descent)/2
         val glyphs=android.graphics.Path().apply {paint.getTextPath(visibleLabel,0,visibleLabel.length,x,y,this)}.asComposePath()
         onDrawBehind {
-            // Pressed leather loses its raised grain under the die. Narrow cavity
-            // edges share the shell's upper-left light, rather than outlining ink.
-            translate(left=.25f.dp.toPx(),top=.45f.dp.toPx()) {drawPath(glyphs,Color(0xFF7898AA).copy(alpha=.30f))}
-            translate(left=-.18f.dp.toPx(),top=-.35f.dp.toPx()) {drawPath(glyphs,Color(0xFF0B223B).copy(alpha=.68f))}
-            drawPath(glyphs,Brush.linearGradient(listOf(Color(0xFF173650),Color(0xFF24455E)),start=Offset(x,y-12.sp.toPx()),end=Offset(x+size.width*.35f,y+3.sp.toPx())))
-            // A compressed micro-pore finish remains, without the surrounding pebble relief.
-            drawPath(glyphs,SurfaceTextures.paper,alpha=.14f)
+            // Navy contact shadow seats the embossed foil in the leather. Offset edges
+            // give the lettering thickness; gold stays inside the actual glyph paths.
+            translate(left=.35f.dp.toPx(),top=.8f.dp.toPx()) {drawPath(glyphs,Color(0xFF071A30).copy(alpha=.88f))}
+            translate(left=.18f.dp.toPx(),top=.38f.dp.toPx()) {drawPath(glyphs,Color(0xFF80541B))}
+            translate(left=-.22f.dp.toPx(),top=-.34f.dp.toPx()) {drawPath(glyphs,Color(0xFFFFE7A4).copy(alpha=.90f))}
+            drawPath(glyphs,Brush.linearGradient(
+                0f to Color(0xFFF1D18B),.30f to Color(0xFFD4A74E),.46f to Color(0xFFFFE9AB),
+                .59f to Color(0xFFBD8732),1f to Color(0xFFE2B963),
+                start=Offset(x,y+paint.fontMetrics.ascent),end=Offset(x+size.width*.12f,y+paint.fontMetrics.descent)))
+            // Fine foil texture is confined to the lettering, retaining its metallic face.
+            drawPath(glyphs,SurfaceTextures.paper,alpha=.045f)
+
         }
     })
 }

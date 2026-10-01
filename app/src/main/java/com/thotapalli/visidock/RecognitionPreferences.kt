@@ -21,7 +21,7 @@ object RecognitionPreferences {
     }
 }
 
-enum class RecognitionStage { Prepare, Decode, OcrFull, OcrDetail, VisualModel, AssignmentReview }
+enum class RecognitionStage { Prepare, Decode, OcrFull, OcrDetail, VisualPrewarm, VisualModel, AssignmentReview }
 data class RecognitionTiming(val stage: RecognitionStage, val elapsedMillis: Long, val success: Boolean,
     val width: Int = 0, val height: Int = 0, val regionCount: Int = 0) {
     fun json() = JSONObject().put("stage", stage.name).put("elapsedMs", elapsedMillis.coerceAtLeast(0))

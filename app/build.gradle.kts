@@ -21,8 +21,8 @@ android {
         applicationId = "com.thotapalli.visidock"
         minSdk = 26
         targetSdk = 36
-        versionCode = providers.gradleProperty("visidock.versionCode").orElse("11").get().toInt()
-        versionName = providers.gradleProperty("visidock.versionName").orElse("0.6.2").get()
+        versionCode = providers.gradleProperty("visidock.versionCode").orElse("12").get().toInt()
+        versionName = providers.gradleProperty("visidock.versionName").orElse("0.6.3").get()
         val imageApi = providers.gradleProperty("visidock.imageApiUrl").orElse("").get()
         buildConfigField("String", "IMAGE_API_URL", "\"" + imageApi.replace("\\", "\\\\").replace("\"", "\\\"") + "\"")
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"

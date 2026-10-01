@@ -60,7 +60,7 @@ internal object SourceAssignments {
         }.keys.toList()
     }
     private fun assignedText(field: String, value: String): String {
-        val labels = when (field) {
+        val labels = when (field.substringBefore('.').let { if(it=="emails") "email" else if(it=="websites") "website" else it }) {
             "name" -> "name|person|contact"; "role" -> "designation|job title|title|role"
             "company" -> "company|organisation|organization"; "email" -> "e-mail|email"
             "website" -> "website|web"; "address" -> "address"; else -> return value.trim()
@@ -162,7 +162,7 @@ internal object SourceAssignments {
                     } else issues += ExtractionReviewIssue(i, field, "Too many regions were assigned to one identity field.", ids)
                 }
                 val matched = if (ids.isNotEmpty()) ids else if (value.isNotEmpty()) registry.filterValues {
-                    canonical(it.text) == canonical(value)
+                    canonical(assignedText(field,it.text)) == canonical(value)
                 }.keys.toList().takeIf { it.size == 1 }
                     ?: phraseCoverage(field, value, contacts, registry) else emptyList()
                 used += matched

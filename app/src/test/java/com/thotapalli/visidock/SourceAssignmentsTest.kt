@@ -4,6 +4,16 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class SourceAssignmentsTest {
+    @Test fun exactPrintedLabelsDoNotTriggerAnotherModelRead() {
+        val result=read("""{"contacts":[{"name":"Arjun Mehta","role":"Sales Manager","company":"Northline",
+            "emails":["arjun@northline.example"],"websites":["www.northline.example"],"address":"12 Lake Road"}]}""",
+            evidence("Name: Arjun Mehta","Designation: Sales Manager","Company: Northline",
+                "Email: arjun@northline.example","Website: www.northline.example","Address: 12 Lake Road"))
+        assertEquals("Arjun Mehta",result.contacts.single().name)
+        assertTrue(result.reviewIssues.isEmpty())
+        assertNull(SourceAssignments.repairPrompt(result))
+    }
+
     @Test fun limitedOnlyMissingEmailAndAddressRepairReachesAllFormFields() {
         val input=evidence("NORTHLINE TECHNOLOGIES PRIVATE", "LIMITED", "Arjun Mehta", "Regional Sales Manager",
             "arjun@northline.example", "Building 7", "Lake Road", "Hyderabad 500081")

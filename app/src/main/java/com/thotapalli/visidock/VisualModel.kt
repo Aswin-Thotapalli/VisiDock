@@ -35,6 +35,40 @@ class VisualModel(private val context: Context, private val gpuLanguage:Boolean=
         warmEngine=null;warmCpuVision=null;warmImageCount=0
     }
     fun release() { runtimeScope.launch {extractionMutex.withLock {idleRelease?.cancel();releaseEngine()}} }
+    private fun scheduleIdleRelease() {
+        idleRelease?.cancel()
+        idleRelease=runtimeScope.launch { delay(60_000);extractionMutex.withLock {releaseEngine()} }
+    }
+    private suspend fun <T> withVisionFallback(block:suspend (Boolean)->T):T {
+        val preferences=context.getSharedPreferences("visual-runtime",Context.MODE_PRIVATE)
+        val cpuKey="cpu-vision-0.17.1-$SHA256-${android.os.Build.FINGERPRINT.hashCode()}"
+        if(preferences.getBoolean(cpuKey,false)) return block(true)
+        return try {block(false)} catch(e:LiteRtLmJniException) {
+            currentCoroutineContext().ensureActive()
+            if(!VisualRuntimePolicy.canRetryVisionOnCpu(e.message.orEmpty())) throw e
+            block(true).also {preferences.edit().putBoolean(cpuKey,true).apply()}
+        }
+    }
+    /** Initialize weights only. No photo encoding, conversation or inference runs before OCR. */
+    suspend fun prewarm(imageCount:Int)=withContext(Dispatchers.Default) {
+        require(imageCount in 1..2)
+        val started=android.os.SystemClock.elapsedRealtime()
+        var succeeded=false
+        try {
+            extractionMutex.withLock {
+                currentCoroutineContext().ensureActive()
+                requireSupportedDevice()
+                check(installed()) {"Download visual reading in Settings first."}
+                idleRelease?.cancel()
+                withVisionFallback {cpuVision->prepareEngine(cpuVision,imageCount)}
+                scheduleIdleRelease()
+                succeeded=true
+            }
+        } finally {
+            RecognitionDiagnostics.record(context,RecognitionTiming(RecognitionStage.VisualPrewarm,
+                android.os.SystemClock.elapsedRealtime()-started,succeeded))
+        }
+    }
     companion object {
         private val extractionMutex=Mutex()
         const val BYTES = 2588147712L
@@ -107,20 +141,7 @@ class VisualModel(private val context: Context, private val gpuLanguage:Boolean=
         check(installed()) { "Download visual reading in Settings first." }
         require(front.isFile && (back == null || back.isFile)) { "The card photograph is no longer available." }
         idleRelease?.cancel()
-        val preferences=context.getSharedPreferences("visual-runtime",Context.MODE_PRIVATE)
-        val cpuKey="cpu-vision-0.17.1-$SHA256-${android.os.Build.FINGERPRINT.hashCode()}"
-        if(preferences.getBoolean(cpuKey,false)) {
-            return@withLock infer(front,back,frontText,backText,localHints,true,ocrEvidence)
-        }
-        try { infer(front,back,frontText,backText,localHints,false,ocrEvidence) }
-        catch(e: LiteRtLmJniException) {
-            currentCoroutineContext().ensureActive()
-            if(!VisualRuntimePolicy.canRetryVisionOnCpu(e.message.orEmpty())) throw e
-            // Some devices cannot compile this encoder for their GPU. Retry locally on CPU.
-            val result=infer(front,back,frontText,backText,localHints,true,ocrEvidence)
-            preferences.edit().putBoolean(cpuKey,true).apply()
-            result
-        }
+        withVisionFallback {cpuVision->infer(front,back,frontText,backText,localHints,cpuVision,ocrEvidence)}
         }
         succeeded = true
         result
@@ -130,13 +151,7 @@ class VisualModel(private val context: Context, private val gpuLanguage:Boolean=
         }
     }
 
-    @OptIn(ExperimentalApi::class)
-    private suspend fun infer(front: File, back: File?, frontText: String, backText: String, localHints: String, cpuVision: Boolean, ocrEvidence: OcrEvidence): VisualProposal {
-        currentCoroutineContext().ensureActive()
-        val imageCount=if(back==null) 1 else 2
-        // A changed signature needs a cold engine, so it must pass the cold budget.
-        if(warmEngine!=null && (warmCpuVision!=cpuVision || warmImageCount!=imageCount)) releaseEngine()
-        fun requireMemory(warm: Boolean) {
+    private fun requireMemory(warm: Boolean,imageCount:Int) {
             val manager=context.getSystemService(Context.ACTIVITY_SERVICE) as android.app.ActivityManager
             val memory=android.app.ActivityManager.MemoryInfo().also {manager.getMemoryInfo(it)}
             if(!VisualMemoryPolicy.allows(memory.totalMem,memory.availMem,memory.lowMemory,
@@ -147,16 +162,14 @@ class VisualModel(private val context: Context, private val gpuLanguage:Boolean=
                 throw VisualReadingUnavailableException(message)
             }
         }
-        try { requireMemory(warmEngine!=null) }
+    @OptIn(ExperimentalApi::class)
+    private suspend fun prepareEngine(cpuVision:Boolean,imageCount:Int):Engine {
+        currentCoroutineContext().ensureActive()
+        if(warmEngine!=null && (warmCpuVision!=cpuVision || warmImageCount!=imageCount)) releaseEngine()
+        try { requireMemory(warmEngine!=null,imageCount) }
         catch(e:VisualReadingUnavailableException) {releaseEngine();throw e}
-        val started=android.os.SystemClock.elapsedRealtime()
-        fun stage(name:String) {
-            if(BuildConfig.DEBUG) android.util.Log.d("VisiDockVisualRuntime",
-                "language=${if(gpuLanguage) "gpu" else "cpu"} vision=${if(cpuVision) "cpu" else "gpu"} stage=$name elapsedMs=${android.os.SystemClock.elapsedRealtime()-started}")
-        }
-        stage("initializing")
-        val reused=warmEngine!=null
-        val engine = warmEngine ?: try {
+        warmEngine?.let {return it}
+        val engine = try {
             // This must precede Engine construction to also bound encoder allocation/signatures.
             ExperimentalFlags.visualTokenBudget=280
             ExperimentalFlags.enableSpeculativeDecoding=gpuLanguage && speculativeDecoding
@@ -168,13 +181,36 @@ class VisualModel(private val context: Context, private val gpuLanguage:Boolean=
             throw VisualReadingUnavailableException("Visual reading is unavailable in this device's native runtime. You can still review text suggestions.",e)
         }
         try {
-            val proposal=run {
-            if(!reused) engine.initialize()
+            engine.initialize()
+            currentCoroutineContext().ensureActive()
+            requireMemory(true,imageCount)
             warmEngine=engine;warmCpuVision=cpuVision;warmImageCount=imageCount
+            return engine
+        } catch(e:LinkageError) {
+            runCatching {engine.close()}
+            throw VisualReadingUnavailableException("Visual reading is unavailable in this device's native runtime. You can still review text suggestions.",e)
+        } catch(e:Exception) {
+            runCatching {engine.close()}
+            throw e
+        }
+    }
+    @OptIn(ExperimentalApi::class)
+    private suspend fun infer(front: File, back: File?, frontText: String, backText: String, localHints: String, cpuVision: Boolean, ocrEvidence: OcrEvidence): VisualProposal {
+        val imageCount=if(back==null) 1 else 2
+        val started=android.os.SystemClock.elapsedRealtime()
+        fun stage(name:String) {
+            if(BuildConfig.DEBUG) android.util.Log.d("VisiDockVisualRuntime",
+                "language=${if(gpuLanguage) "gpu" else "cpu"} vision=${if(cpuVision) "cpu" else "gpu"} stage=$name elapsedMs=${android.os.SystemClock.elapsedRealtime()-started}")
+        }
+        val reused=warmEngine!=null && warmCpuVision==cpuVision && warmImageCount==imageCount
+        stage("initializing")
+        val engine=prepareEngine(cpuVision,imageCount)
+        try {
+            val proposal=run {
             stage(if(reused) "reused" else "initialized")
             // Initialization can consume the reserve that was available at admission.
             // Check again before native image encoding/prefill, where the observed kill occurred.
-            requireMemory(true)
+            requireMemory(true,imageCount)
             currentCoroutineContext().ensureActive()
             val promptEvidence=VisualPromptEvidence.build(frontText,backText,ocrEvidence)
             val contents = mutableListOf<Content>(Content.Text("Front of card:"), Content.ImageFile(front.path))
@@ -239,10 +275,7 @@ class VisualModel(private val context: Context, private val gpuLanguage:Boolean=
             if(BuildConfig.DEMO) evaluationObserver?.invoke("completed",proposal)
             // Keep weights warm for a short capture batch; conversations always close above.
             // Idle expiry frees memory without retaining a user's inference context.
-            idleRelease=runtimeScope.launch {
-                delay(60_000)
-                extractionMutex.withLock {releaseEngine()}
-            }
+            scheduleIdleRelease()
             return proposal
         } catch(e: LinkageError) {
             if(warmEngine===engine) releaseEngine() else runCatching {engine.close()}

@@ -214,10 +214,29 @@ private val destinations = listOf(Destination("Collection", Icons.Outlined.Style
             containerColor=Color.Transparent,
             contentColor=MaterialTheme.colorScheme.onBackground,
             snackbarHost={ SnackbarHost(snackbar) },
-            bottomBar={ AnimatedVisibility(showNav && !rail,enter=expandVertically(DockMotion.settle(480f,1f),expandFrom=Alignment.Bottom)+fadeIn(DockMotion.spec(120)),exit=shrinkVertically(DockMotion.spec(180),shrinkTowards=Alignment.Bottom)+fadeOut(DockMotion.spec(100))) {NavigationBar(containerColor=MaterialTheme.colorScheme.surface) {
-                destinations.forEachIndexed { index, item -> DockNavigationBarItem(selected=tab==index, onClick={navigate(index)}, icon={ Icon(item.icon, null) }, label={ Text(item.title) }) }
-            }} },
-            floatingActionButton={ AnimatedVisibility(showNav && tab < 2 && state.busy==null,enter=fadeIn(DockMotion.spec(140))+scaleIn(DockMotion.settle(520f,.92f),initialScale=.88f),exit=fadeOut(DockMotion.spec(90))+scaleOut(DockMotion.spec(150),targetScale=.94f)) {DockExtendedFloatingActionButton(elevation=FloatingActionButtonDefaults.elevation(0.dp,0.dp,0.dp,0.dp), onClick={add=true}, modifier=Modifier.semantics { contentDescription="Add card" }, icon={ Icon(Icons.Outlined.Add, null) }, text={ Text("Add card") }, containerColor=MaterialTheme.colorScheme.primary, contentColor=MaterialTheme.colorScheme.onPrimary)} }
+            bottomBar={ Column {
+                // A measured action shelf participates in Scaffold padding; it never floats
+                // over case captions, search results, selection controls or detail text.
+                AnimatedVisibility(showNav && tab < 2 && state.busy==null,
+                    enter=expandVertically(DockMotion.settle(480f,1f))+fadeIn(DockMotion.spec(140)),
+                    exit=shrinkVertically(DockMotion.spec(180))+fadeOut(DockMotion.spec(90))) {
+                    Surface(color=MaterialTheme.colorScheme.surface) {
+                        Row(Modifier.fillMaxWidth()
+                            .then(if(rail) Modifier.windowInsetsPadding(WindowInsets.navigationBars.only(WindowInsetsSides.Bottom)) else Modifier)
+                            .padding(start=if(rail) 100.dp else 20.dp,end=20.dp,top=10.dp,bottom=10.dp),
+                            horizontalArrangement=Arrangement.End) {
+                            DockExtendedFloatingActionButton(elevation=FloatingActionButtonDefaults.elevation(0.dp,0.dp,0.dp,0.dp),
+                                onClick={add=true},modifier=Modifier.semantics {contentDescription="Add card"},
+                                icon={Icon(Icons.Outlined.Add,null)},text={Text("Add card")},
+                                containerColor=MaterialTheme.colorScheme.primary,contentColor=MaterialTheme.colorScheme.onPrimary)
+                        }
+                    }
+                }
+                AnimatedVisibility(showNav && !rail,enter=expandVertically(DockMotion.settle(480f,1f),expandFrom=Alignment.Bottom)+fadeIn(DockMotion.spec(120)),exit=shrinkVertically(DockMotion.spec(180),shrinkTowards=Alignment.Bottom)+fadeOut(DockMotion.spec(100))) {NavigationBar(containerColor=MaterialTheme.colorScheme.surface) {
+                    destinations.forEachIndexed { index, item -> DockNavigationBarItem(selected=tab==index, onClick={navigate(index)}, icon={ Icon(item.icon, null) }, label={ Text(item.title) }) }
+                }}
+            } }
+
         ) { padding ->
             Row(Modifier.fillMaxSize().padding(padding).consumeWindowInsets(padding)) {
                 AnimatedVisibility(showNav && rail,enter=expandHorizontally(DockMotion.settle(480f,1f))+fadeIn(DockMotion.spec(120)),exit=shrinkHorizontally(DockMotion.spec(180))+fadeOut(DockMotion.spec(100))) {NavigationRail(Modifier.fillMaxHeight(), containerColor=MaterialTheme.colorScheme.surface) {
