@@ -1,0 +1,89 @@
+{
+  "synthetic": true,
+  "model": "Gemma4 E2B LiteRTLM 0.17.1 Windows CPU",
+  "promptSha256": "bb208f8aeb13de2e6c4b2840fc2e42768b881fa3345684a4b14f56fe37b9ed11",
+  "rawText": "NORTHLINE STUDIO\nOffice: 040 2345 6789\nDirect: 040 2345 6790\nMobile: +91 98765 43210\nmira@example.com\nstudio@example.com\nexample.com\nstudio.example",
+  "regions": [
+    {
+      "id": "F1",
+      "box": [
+        50,
+        70,
+        321,
+        114
+      ],
+      "text": "NORTHLINE STUDIO"
+    },
+    {
+      "id": "F2",
+      "box": [
+        50,
+        365,
+        271,
+        401
+      ],
+      "text": "Office: 040 2345 6789"
+    },
+    {
+      "id": "F3",
+      "box": [
+        50,
+        432,
+        271,
+        468
+      ],
+      "text": "Direct: 040 2345 6790"
+    },
+    {
+      "id": "F4",
+      "box": [
+        50,
+        499,
+        304,
+        535
+      ],
+      "text": "Mobile: +91 98765 43210"
+    },
+    {
+      "id": "F5",
+      "box": [
+        50,
+        579,
+        250,
+        615
+      ],
+      "text": "mira@example.com"
+    },
+    {
+      "id": "F6",
+      "box": [
+        50,
+        639,
+        266,
+        675
+      ],
+      "text": "studio@example.com"
+    },
+    {
+      "id": "F7",
+      "box": [
+        50,
+        699,
+        183,
+        735
+      ],
+      "text": "example.com"
+    },
+    {
+      "id": "F8",
+      "box": [
+        50,
+        759,
+        201,
+        795
+      ],
+      "text": "studio.example"
+    }
+  ],
+  "response": "```json\n{\n  \"contacts\": [\n    {\n      \"name\": \"Mira Sen\",\n      \"role\": \"Design Director\",\n      \"company\": \"NORTHLINE STUDIO\",\n      \"address\": \"Building 7, Lake Road, PO Box 123, Madhapur, Hyderabad 500081\",\n      \"phones\": [\n        {\n          \"number\": \"040 2345 6789\",\n          \"label\": \"Office\"\n        },\n        {\n          \"number\": \"040 2345 6790\",\n          \"label\": \"Direct\"\n        },\n        {\n          \"number\": \"+91 98765 43210\",\n          \"label\": \"Mobile\"\n        }\n      ],\n      \"emails\": [\n        \"mira@example.com\",\n        \"studio@example.com\"\n      ],\n      \"websites\": [\n        \"example.com\",\n        \"studio.example\"\n      ]\n    }\n  ],\n  \"warnings\": []\n}\n```"
+}

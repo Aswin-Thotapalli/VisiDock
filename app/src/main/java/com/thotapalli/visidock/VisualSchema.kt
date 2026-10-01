@@ -3,7 +3,8 @@ package com.thotapalli.visidock
 import org.json.JSONArray
 import org.json.JSONObject
 
-/** Constrained decoding contract. This controls syntax/shape, not truth or field ownership.
+/** Offline schema/evaluation contract. Production uses validated free-form JSON generation
+ * after constrained decoding regressed field completeness. This controls syntax/shape, not truth or field ownership.
  * Grounding and channel validation still run after decoding. No account/profile keys exist here.
  * Source IDs remain optional so image-only/legacy OCR paths can use the same contract.
  */

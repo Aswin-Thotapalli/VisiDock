@@ -4,6 +4,67 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class SourceAssignmentsTest {
+    @Test fun limitedOnlyMissingEmailAndAddressRepairReachesAllFormFields() {
+        val input=evidence("NORTHLINE TECHNOLOGIES PRIVATE", "LIMITED", "Arjun Mehta", "Regional Sales Manager",
+            "arjun@northline.example", "Building 7", "Lake Road", "Hyderabad 500081")
+        val failed=read("""{"contacts":[{"name":"Limited","company":"NORTHLINE TECHNOLOGIES PRIVATE LIMITED"}]}""",input)
+        assertEquals("",failed.contacts.single().name)
+        assertTrue(failed.reviewIssues.any { it.field=="name" })
+        assertNotNull(SourceAssignments.repairPrompt(failed))
+        val repaired=read("""{"contacts":[{"name":"Arjun Mehta","role":"Regional Sales Manager",
+            "company":"NORTHLINE TECHNOLOGIES PRIVATE LIMITED","emails":["arjun@northline.example"],
+            "address":"Building 7\nLake Road\nHyderabad 500081"}]}""",input)
+        val accepted=SourceAssignments.preferRepair(failed,repaired)
+        val form=ScanReconciliation.reconcile(accepted,Card(id="draft"),emptyList(),emptyMap(),emptyList(),emptyList(),0,null,"scan").cards.single()
+        assertEquals("Arjun Mehta",form.name)
+        assertEquals("Regional Sales Manager",form.role)
+        assertEquals("arjun@northline.example",form.email)
+        assertEquals("Building 7\nLake Road\nHyderabad 500081",form.address)
+        assertEquals("NORTHLINE TECHNOLOGIES PRIVATE LIMITED",form.company)
+    }
+
+    @Test fun legalSuffixCannotSurviveAsPersonalNameEvenWithoutPositionedOcr() {
+        listOf("Limited", "Pvt Ltd", "Pvt. Ltd.", "LLC", "Private Limited").forEach { name ->
+            val result = VisualExtraction.parse("""{"contacts":[{"name":"$name","company":"Northline Private Limited"}]}""", "Mira Sen\nNorthline Private Limited")
+            assertEquals("", result.contacts.single().name)
+            assertTrue(result.reviewIssues.any { it.field == "name" && it.reason.contains("legal suffix") })
+        }
+        val real = read("""{"contacts":[{"name":"Mira Limited","company":"Northline Limited"}]}""", evidence("Mira Limited", "Northline Limited"))
+        assertEquals("Mira Limited", real.contacts.single().name)
+    }
+
+    @Test fun completeMultilineLiteralAddressAndCompanyCoverUniqueFullRegions() {
+        val result = read("""{"contacts":[{"name":"Mira Sen","company":"Northline Design Studio","address":"Building 7, Industrial Estate\n12 Lake Road\nBengaluru 560001"}]}""",
+            evidence("Mira Sen", "Northline Design", "Studio", "Building 7, Industrial Estate", "12 Lake Road", "Bengaluru 560001"))
+        assertEquals(listOf("F2", "F3"), result.sources.single { it.field == "company" }.regionIds)
+        assertEquals(listOf("F4", "F5", "F6"), result.sources.single { it.field == "address" }.regionIds)
+        assertTrue(result.unassignedRegionIds.isEmpty())
+    }
+
+    @Test fun inferredOfficeCoverageRejectsRepeatedPhrasesWordFragmentsAndOtherIdentity() {
+        val input = evidence("Mira Sen", "Dev Rao", "Lake", "Road", "Road", "12 Lake Road")
+        val result = read("""{"contacts":[{"name":"Mira Sen","address":"Dev Rao, Lakeside, 12 Lake Road"},{"name":"Dev Rao"}]}""", input)
+        val ids = result.sources.firstOrNull { it.field == "address" }?.regionIds.orEmpty()
+        assertFalse("F2" in ids)
+        assertFalse("F4" in ids || "F5" in ids)
+        val fragment = read("""{"contacts":[{"name":"Mira Sen","address":"Lakeside"}]}""", evidence("Mira Sen", "Lake"))
+        assertFalse(fragment.sources.any { it.field == "address" })
+    }
+
+    @Test fun tiedRepairMayFillGroundedFieldsButCannotIntroduceOwnershipRiskOrDropChannels() {
+        val input = evidence("Mira Sen", "Design Director", "12 Lake Road", "Bengaluru 560001")
+        val issue = ExtractionReviewIssue(0, "unassigned", "Still review the footer", listOf("F4"))
+        val first = read("""{"contacts":[{"name":"Mira Sen"}]}""", input).copy(reviewIssues=listOf(issue))
+        val revised = read("""{"contacts":[{"name":"Mira Sen","role":"Design Director","address":"12 Lake Road\nBengaluru 560001"}]}""", input).copy(reviewIssues=listOf(issue))
+        assertEquals(revised, SourceAssignments.preferRepair(first, revised))
+        val unsafe = revised.copy(reviewIssues=listOf(ExtractionReviewIssue(0,"ownership","Unassigned person",listOf("F3"))))
+        assertEquals(first.contacts, SourceAssignments.preferRepair(first,unsafe).contacts)
+        val withPhone = first.copy(contacts=listOf(first.contacts.single().copy(phone="9876543210")))
+        assertEquals(withPhone.contacts, SourceAssignments.preferRepair(withPhone,revised).contacts)
+        val invented = revised.copy(sources=emptyList())
+        assertEquals(first.contacts, SourceAssignments.preferRepair(first,invented).contacts)
+    }
+
     private fun evidence(vararg texts: String) = OcrEvidence(texts.mapIndexed { i, text ->
         OcrObservation(OcrRegion(text, .1f, .05f+i*.08f, .8f, .1f+i*.08f), .98f)
     })

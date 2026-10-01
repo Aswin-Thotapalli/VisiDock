@@ -1,0 +1,139 @@
+{
+  "synthetic": true,
+  "model": "Gemma4 E2B LiteRTLM 0.17.1 Windows CPU",
+  "promptSha256": "bb208f8aeb13de2e6c4b2840fc2e42768b881fa3345684a4b14f56fe37b9ed11",
+  "rawText": "NORTHLINE TECHNOLOGIES PRIVATE\nLIMITED\nArjun Mehta\nRegional Sales Manager\nOffice: 040 2345 6789\nDirect: 040 2345 6790\nMobile: +91 98765 43210\narjun@northline.example\nwww.northline.example\nPlot No. 27, Sapphire Business Park\nRoad No. 5, Jubilee Hills\nHyderabad, Telangana 500033\nIndia",
+  "regions": [
+    {
+      "id": "F1",
+      "box": [
+        50,
+        75,
+        660,
+        127
+      ],
+      "text": "NORTHLINE TECHNOLOGIES PRIVATE"
+    },
+    {
+      "id": "F2",
+      "box": [
+        50,
+        142,
+        180,
+        194
+      ],
+      "text": "LIMITED"
+    },
+    {
+      "id": "F3",
+      "box": [
+        50,
+        270,
+        288,
+        336
+      ],
+      "text": "Arjun Mehta"
+    },
+    {
+      "id": "F4",
+      "box": [
+        50,
+        355,
+        308,
+        393
+      ],
+      "text": "Regional Sales Manager"
+    },
+    {
+      "id": "F5",
+      "box": [
+        50,
+        470,
+        258,
+        504
+      ],
+      "text": "Office: 040 2345 6789"
+    },
+    {
+      "id": "F6",
+      "box": [
+        50,
+        530,
+        258,
+        564
+      ],
+      "text": "Direct: 040 2345 6790"
+    },
+    {
+      "id": "F7",
+      "box": [
+        50,
+        590,
+        290,
+        624
+      ],
+      "text": "Mobile: +91 98765 43210"
+    },
+    {
+      "id": "F8",
+      "box": [
+        50,
+        670,
+        287,
+        704
+      ],
+      "text": "arjun@northline.example"
+    },
+    {
+      "id": "F9",
+      "box": [
+        50,
+        735,
+        270,
+        769
+      ],
+      "text": "www.northline.example"
+    },
+    {
+      "id": "F10",
+      "box": [
+        493,
+        480,
+        798,
+        510
+      ],
+      "text": "Plot No. 27, Sapphire Business Park"
+    },
+    {
+      "id": "F11",
+      "box": [
+        493,
+        540,
+        701,
+        570
+      ],
+      "text": "Road No. 5, Jubilee Hills"
+    },
+    {
+      "id": "F12",
+      "box": [
+        493,
+        600,
+        755,
+        630
+      ],
+      "text": "Hyderabad, Telangana 500033"
+    },
+    {
+      "id": "F13",
+      "box": [
+        493,
+        660,
+        535,
+        690
+      ],
+      "text": "India"
+    }
+  ],
+  "response": "```json\n{\n  \"contacts\": [\n    {\n      \"name\": \"Arjun Mehta\",\n      \"role\": \"Regional Sales Manager\",\n      \"company\": \"NORTHLINE TECHNOLOGIES PRIVATE LIMITED\",\n      \"address\": \"Plot No. 27, Sapphire Business Park\\nRoad No. 5, Jubilee Hills\\nHyderabad, Telangana 500033\\nIndia\",\n      \"phones\": [\n        {\n          \"number\": \"040 2345 6789\",\n          \"label\": \"Office\"\n        },\n        {\n          \"number\": \"040 2345 6790\",\n          \"label\": \"Direct\"\n        },\n        {\n          \"number\": \"+91 98765 43210\",\n          \"label\": \"Mobile\"\n        }\n      ],\n      \"emails\": [\n        \"arjun@northline.example\"\n      ],\n      \"websites\": [\n        \"www.northline.example\"\n      ]\n    }\n  ],\n  \"warnings\": []\n}\n```"
+}

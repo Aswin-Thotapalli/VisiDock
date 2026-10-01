@@ -1,0 +1,119 @@
+{
+  "synthetic": true,
+  "model": "Gemma4 E2B LiteRTLM 0.17.1 Windows CPU",
+  "promptSha256": "bb208f8aeb13de2e6c4b2840fc2e42768b881fa3345684a4b14f56fe37b9ed11",
+  "rawText": "NORTHLINE STUDIO\nMira Sen\nDev Rao\nDesign Director\nProject Lead\n+91 98765 43210\n+91 91234 56780\nmira@example.com\ndev@example.com\n12 Lake Road, Bengaluru 560001\nwww.example.com",
+  "regions": [
+    {
+      "id": "F1",
+      "box": [
+        50,
+        62,
+        379,
+        118
+      ],
+      "text": "NORTHLINE STUDIO"
+    },
+    {
+      "id": "F2",
+      "box": [
+        50,
+        284,
+        216,
+        351
+      ],
+      "text": "Mira Sen"
+    },
+    {
+      "id": "F3",
+      "box": [
+        541,
+        284,
+        702,
+        351
+      ],
+      "text": "Dev Rao"
+    },
+    {
+      "id": "F4",
+      "box": [
+        50,
+        381,
+        224,
+        423
+      ],
+      "text": "Design Director"
+    },
+    {
+      "id": "F5",
+      "box": [
+        541,
+        381,
+        683,
+        423
+      ],
+      "text": "Project Lead"
+    },
+    {
+      "id": "F6",
+      "box": [
+        50,
+        506,
+        248,
+        548
+      ],
+      "text": "+91 98765 43210"
+    },
+    {
+      "id": "F7",
+      "box": [
+        541,
+        506,
+        740,
+        548
+      ],
+      "text": "+91 91234 56780"
+    },
+    {
+      "id": "F8",
+      "box": [
+        50,
+        590,
+        274,
+        631
+      ],
+      "text": "mira@example.com"
+    },
+    {
+      "id": "F9",
+      "box": [
+        541,
+        590,
+        757,
+        631
+      ],
+      "text": "dev@example.com"
+    },
+    {
+      "id": "F10",
+      "box": [
+        50,
+        791,
+        428,
+        833
+      ],
+      "text": "12 Lake Road, Bengaluru 560001"
+    },
+    {
+      "id": "F11",
+      "box": [
+        50,
+        861,
+        261,
+        902
+      ],
+      "text": "www.example.com"
+    }
+  ],
+  "response": "```json\n{\n  \"contacts\": [\n    {\n      \"name\": \"Mira Sen\",\n      \"role\": \"Design Director\",\n      \"company\": \"NORTHLINE STUDIO\",\n      \"address\": \"12 Lake Road, Bengaluru 560001\",\n      \"phones\": [\n        {\n          \"number\": \"+91 98765 43210\",\n          \"label\": \"Phone\"\n        }\n      ],\n      \"emails\": [\n        \"mira@example.com\"\n      ],\n      \"websites\": [\n        \"www.example.com\"\n      ]\n    },\n    {\n      \"name\": \"Dev Rao\",\n      \"role\": \"Project Lead\",\n      \"company\": \"NORTHLINE STUDIO\",\n      \"address\": \"12 Lake Road, Bengaluru 560001\",\n      \"phones\": [\n        {\n          \"number\": \"+91 91234 56780\",\n          \"label\": \"Phone\"\n        }\n      ],\n      \"emails\": [\n        \"dev@example.com\"\n      ],\n      \"websites\": [\n        \"www.example.com\"\n      ]\n    }\n  ],\n  \"warnings\": []\n}\n```"
+}

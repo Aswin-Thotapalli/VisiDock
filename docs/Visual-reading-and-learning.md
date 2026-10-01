@@ -1,5 +1,14 @@
 # Visual reading and local correction learning
 
+## 0.6.2 generation and field-assignment regression
+
+The 0.6.1 field-value change was insufficient: a user confirmed version 0.6.1 (10) still assigned a company suffix to name and omitted email/address despite readable OCR. Controlled Windows model tests then exposed a generation-path difference: with identical photographs, OCR and the final instruction, constrained JSON generation omitted channels and produced bogus contacts; unconstrained generation returned both people and their complete separate details in one pass. Production no longer enables response-format constraints. The bounded JSON parser, type checks, channel validation and source review still apply to the generated response, including fenced JSON.
+
+Complete readable OCR now precedes optional spatial metadata instead of disappearing when represented in source rows. Source rows keep original order. The shorter extraction instruction and fresh-context repair avoid accumulating the failed generation inside the 4096-token context. Learned hints are not truncated mid-JSON. Corporate-suffix-only names request repair; complete model-written company/address values can cover their separate OCR lines; a more complete grounded repair can be accepted when issue counts tie without discarding people/channels.
+
+Final unconstrained synthetic model checks passed two people with separate channels, a forced company-suffix failure repair (one correct complete person), and image recovery when OCR omitted name/title/address. Exact real-model responses are versioned under `app/src/test/resources/recognition/` and run through the production parser and form reconciliation in JVM tests. These are Windows CPU model tests with synthetic OCR positions, not Android device or real-camera acceptance. The user's private failing card was not obtained, so its exact failure has not been reproduced.
+
+
 ## 0.6.1 field-population regression fix
 
 OCR and visual interpretation still share one extraction request: both card photographs, OCR text, positioned source regions and alternative readings are supplied together. The visual model assigns readable text to fields and people. It now returns explicit field values; source IDs are optional review annotations instead of the primary representation of names, roles, companies and addresses. The previous ID-only contract could leave those fields blank when its references were missing or disputed.

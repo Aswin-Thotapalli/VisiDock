@@ -176,19 +176,25 @@ class VisualModel(private val context: Context, private val gpuLanguage:Boolean=
             // Check again before native image encoding/prefill, where the observed kill occurred.
             requireMemory(true)
             currentCoroutineContext().ensureActive()
-            engine.createConversation(ConversationConfig(systemInstruction = Contents.of(VisualExtraction.instruction),
-                samplerConfig = SamplerConfig(topK = 1, topP = 1.0, temperature = 0.0),
-                maxOutputToken = 1400, thinkingConfig = ThinkingConfig(enableThinking = false),enableResponseFormat=true)).use { conversation ->
-                val contents = mutableListOf<Content>(Content.Text("Front of card:"), Content.ImageFile(front.path))
-                back?.let { contents += Content.Text("Back of the SAME card:"); contents += Content.ImageFile(it.path) }
-                contents += Content.Text(VisualPromptEvidence.build(frontText,backText,ocrEvidence).text)
-                if(localHints.isNotBlank()) contents += Content.Text(localHints.take(600))
-                suspend fun read(message: Contents): VisualProposal {
+            val promptEvidence=VisualPromptEvidence.build(frontText,backText,ocrEvidence)
+            val contents = mutableListOf<Content>(Content.Text("Front of card:"), Content.ImageFile(front.path))
+            back?.let { contents += Content.Text("Back of the SAME card:"); contents += Content.ImageFile(it.path) }
+            contents += Content.Text(promptEvidence.text)
+            // Never slice a learned suggestion through a JSON string/object. Oversized hints
+            // are optional; the current photograph and complete readable OCR take priority.
+            if(localHints.isNotBlank() && localHints.length<=600) contents += Content.Text(localHints)
+            // Grammar-constrained generation regressed actual field content in controlled
+            // image+OCR probes. Let the model produce JSON normally; the bounded parser still
+            // validates syntax, types, channels and ownership before values reach the form.
+            suspend fun read(message: Contents): VisualProposal {
+                return engine.createConversation(ConversationConfig(systemInstruction = Contents.of(VisualExtraction.instruction),
+                    samplerConfig = SamplerConfig(topK = 1, topP = 1.0, temperature = 0.0),
+                    maxOutputToken = 1400, thinkingConfig = ThinkingConfig(enableThinking = false))).use { conversation ->
                     val result = StringBuilder()
                     var completeJson:String?=null
                     var firstResponse=true
                     try {
-                        conversation.sendMessageAsync(message,responseFormat=ResponseFormat.json(VisualSchema.json)).takeWhile { chunk ->
+                        conversation.sendMessageAsync(message).takeWhile { chunk ->
                             currentCoroutineContext().ensureActive()
                             if(firstResponse) {stage("first_response");firstResponse=false}
                             result.append(chunk.contents.contents.filterIsInstance<Content.Text>().joinToString("") { it.text })
@@ -197,25 +203,26 @@ class VisualModel(private val context: Context, private val gpuLanguage:Boolean=
                             completeJson==null
                         }.collect {}
                     } finally {
-                        // The SDK flow's awaitClose does not stop native generation.
                         stage("cancel_requested")
                         runCatching { conversation.cancelProcess() }
                         stage("cancel_returned")
                     }
                     currentCoroutineContext().ensureActive()
-                    return VisualExtraction.parse(completeJson ?: result.toString(), frontText, backText, ocrEvidence)
+                    VisualExtraction.parse(completeJson ?: result.toString(), frontText, backText, ocrEvidence)
                 }
+            }
                 val first = read(Contents.of(contents))
                 if(BuildConfig.DEMO) evaluationObserver?.invoke("initial",first)
                 stage("json_complete")
                 val repairPrompt = SourceAssignments.repairPrompt(first)
                 if (repairPrompt == null) first else {
-                    // At most one contextual repair: reuse the photographs/evidence in this conversation.
+                    // One fresh-context repair reuses the images and OCR, without accumulating a failed
+                    // response in the 4096-token conversation window. Weights remain warm.
                     // Never let a repair failure discard the usable first proposal or mask cancellation.
                     stage("assignment_review")
                     val repairStarted = android.os.SystemClock.elapsedRealtime()
                     var repaired = false
-                    try { SourceAssignments.preferRepair(first, read(Contents.of(listOf(Content.Text(repairPrompt))))).also { repaired = true } }
+                    try { SourceAssignments.preferRepair(first, read(Contents.of(contents + Content.Text(repairPrompt)))).also { repaired = true } }
                     catch (e: kotlinx.coroutines.CancellationException) { throw e }
                     catch (e: Exception) {
                         currentCoroutineContext().ensureActive()
@@ -225,7 +232,6 @@ class VisualModel(private val context: Context, private val gpuLanguage:Boolean=
                             android.os.SystemClock.elapsedRealtime()-repairStarted, repaired))
                     }
                 }
-            }
             }
             stage("conversation_closed")
             VisualExtraction.requireUsable(proposal)

@@ -76,8 +76,14 @@ data class OcrEvidence(
         if(includeConflicts) for (row in conflicts) if (result.length + row.length + 1 <= limit) result.append(row).append('\n')
         // Alternate ends when the card exceeds the budget: preserve identity and footer address evidence.
         val order = rows.indices.flatMap { listOf(it, rows.lastIndex-it) }.distinct()
-        val represented=mutableListOf<OcrRegion>()
+        val selected=mutableListOf<Int>()
+        var selectedLength=result.length
         for (index in order) {
+            if(selectedLength+rows[index].length+1<=limit) {selected+=index;selectedLength+=rows[index].length+1}
+        }
+        val represented=mutableListOf<OcrRegion>()
+        // Select coverage from both ends, but PRESENT selected rows in their original order.
+        for (index in selected.sorted()) {
             val row = rows[index]
             if (result.length + row.length + 1 <= limit) {
                 result.append(row).append('\n')

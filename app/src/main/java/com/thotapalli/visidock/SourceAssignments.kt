@@ -32,6 +32,33 @@ internal object SourceAssignments {
         }
     }
     private fun canonical(value: String) = value.lowercase(Locale.ROOT).replace(Regex("\\s+"), " ").trim()
+    private fun corporateSuffixOnly(value: String): Boolean {
+        val tokens = canonical(value).replace(".", "").split(Regex("[^\\p{L}\\p{N}]+" )).filter(String::isNotBlank)
+        return tokens.isNotEmpty() && tokens.all { it in setOf("limited", "ltd", "private", "pvt", "llc", "llp", "plc", "inc", "incorporated", "corp", "corporation") }
+    }
+    private fun uniquePhrase(phrase: String, text: String): Boolean = Regex(
+        "(?<![\\p{L}\\p{M}\\p{N}])" + Regex.escape(canonical(phrase)) + "(?![\\p{L}\\p{M}\\p{N}])"
+    ).findAll(canonical(text)).take(2).count() == 1
+
+    /** Annotation only: never construct a value or transfer a person's identity into an office field. */
+    private fun phraseCoverage(field: String, literal: String, contacts: JSONArray,
+        registry: Map<String, OcrRegion>): List<String> {
+        if (field !in listOf("address", "company")) return emptyList()
+        return registry.filter { (id, region) ->
+            val phrase = assignedText(field, region.text)
+            phrase.count(Char::isLetterOrDigit) >= 3 && uniquePhrase(phrase, literal) &&
+                registry.values.count { canonical(assignedText(field, it.text)) == canonical(phrase) } == 1 &&
+                (0 until contacts.length()).none { index ->
+                    val person = contacts.getJSONObject(index)
+                    listOf("name", "role").any { identity ->
+                        val identityValue = (person.opt(identity) as? String).orEmpty()
+                        val ids = person.optJSONObject("sources")?.optJSONArray(identity)
+                        (identityValue.isNotBlank() && uniquePhrase(phrase, identityValue)) ||
+                            (ids != null && (0 until ids.length()).any { ids.optString(it) == id })
+                    }
+                }
+        }.keys.toList()
+    }
     private fun assignedText(field: String, value: String): String {
         val labels = when (field) {
             "name" -> "name|person|contact"; "role" -> "designation|job title|title|role"
@@ -100,7 +127,6 @@ internal object SourceAssignments {
         val json = JSONObject(input.toString())
         val contacts = json.getJSONArray("contacts")
         val registry = evidence.sourceRegions()
-        if (registry.isEmpty()) return AssignmentResult(json, emptyList(), emptyList(), emptyList())
         val sources = mutableListOf<FieldSource>()
         val issues = mutableListOf<ExtractionReviewIssue>()
         val used = mutableSetOf<String>()
@@ -137,7 +163,8 @@ internal object SourceAssignments {
                 }
                 val matched = if (ids.isNotEmpty()) ids else if (value.isNotEmpty()) registry.filterValues {
                     canonical(it.text) == canonical(value)
-                }.keys.toList().takeIf { it.size == 1 }.orEmpty() else emptyList()
+                }.keys.toList().takeIf { it.size == 1 }
+                    ?: phraseCoverage(field, value, contacts, registry) else emptyList()
                 used += matched
                 if (matched.isNotEmpty()) sources += FieldSource(i, field, value, matched,
                     matched.map(registry::getValue), ids.isNotEmpty())
@@ -150,6 +177,11 @@ internal object SourceAssignments {
                 }
             }
             val ownSources = sources.filter { it.contactIndex == i }
+            if (corporateSuffixOnly(person.optString("name"))) {
+                person.put("name", "")
+                issues += ExtractionReviewIssue(i, "name", "A company legal suffix was assigned as a personal name. Read the person's name from the photograph.",
+                    ownSources.firstOrNull { it.field == "name" }?.regionIds.orEmpty())
+            }
             val name = ownSources.firstOrNull { it.field == "name" }
             val conflicts = ownSources.filter { it.field in listOf("role", "company") &&
                 name != null && it.regionIds.intersect(name.regionIds.toSet()).isNotEmpty() &&
@@ -203,13 +235,18 @@ internal object SourceAssignments {
 
     fun repairPrompt(proposal: VisualProposal): String? {
         if (proposal.reviewIssues.isEmpty()) return null
-        val issues = JSONArray(proposal.reviewIssues.take(8).map { issue -> JSONObject()
-            .put("person", issue.contactIndex + 1).put("field", issue.field)
-            .put("reason", issue.reason).put("sources", JSONArray(issue.sourceIds)) })
-        return "Review these assignment problems against the SAME photographs and source IDs: $issues\n" +
-            "Return the COMPLETE corrected contacts JSON with actual field values; source IDs are optional annotations, never replacements for values. Preserve all correctly read details and every person. " +
-            "If there is no printed person, mark kind=company. Use the image and layout to distinguish names from roles. " +
-            "Do not invent values, ownership or punctuation. Leave genuinely ambiguous fields empty and explain in warnings."
+        val issues = JSONArray()
+        for(issue in proposal.reviewIssues.take(8)) {
+            val entry=JSONObject().put("person",issue.contactIndex+1).put("field",issue.field)
+                .put("reason",issue.reason).put("sources",JSONArray(issue.sourceIds.take(12)))
+            if(issues.toString().length+entry.toString().length>1100) break
+            issues.put(entry)
+        }
+        return "The previous reading had these problems: $issues\n" +
+            "Read the supplied photographs and COMPLETE OCR again. Return corrected contacts with actual field values. " +
+            "Recover omitted names, emails and complete addresses. Keep every person and correctly read channel. " +
+            "A company suffix is not a personal name. Source IDs are optional. Never invent missing text or ownership."
+
     }
 
     /** A corrective pass may not erase a person or a previously read contact channel. */
@@ -226,8 +263,33 @@ internal object SourceAssignments {
                 original.contactEmails.all { email -> target.contactEmails.any { it.equals(email, true) } } &&
                 original.contactWebsites.all { website -> target.contactWebsites.any { it.equals(website, true) } }
         }
-        val acceptable = revised.contacts.size >= first.contacts.size &&
-            revised.reviewIssues.size < first.reviewIssues.size && first.contacts.withIndex().all { preserved(it.index, it.value) }
+        fun groundedFields(proposal: VisualProposal): Set<Pair<Int, String>> = proposal.sources.filter { source ->
+            source.value.isNotBlank() && source.regions.isNotEmpty() &&
+                proposal.reviewIssues.none { it.contactIndex == source.contactIndex && it.field == source.field } &&
+                uniquePhrase(source.value, source.regions.joinToString(" ") { assignedText(source.field, it.text) })
+        }.map { it.contactIndex to it.field }.toSet()
+        val originalOwnership = first.reviewIssues.filter { it.field == "ownership" }
+        val revisedOwnership = revised.reviewIssues.filter { it.field == "ownership" }
+        val noWorseOwnership = revisedOwnership.size <= originalOwnership.size && revisedOwnership.all { issue ->
+            originalOwnership.any { old -> old.contactIndex == issue.contactIndex &&
+                issue.sourceIds.toSet().let { ids -> if (ids.isEmpty()) old.sourceIds.isEmpty() && old.reason == issue.reason
+                    else old.sourceIds.containsAll(ids) } }
+        }
+        fun scalar(card: Card?, field: String): String = when (field) {
+            "name" -> card?.name; "role" -> card?.role; "company" -> card?.company
+            "address" -> card?.address; "email" -> card?.email; "website" -> card?.website
+            else -> null
+        }.orEmpty()
+        val moreGrounded = groundedFields(revised).count { (index, field) ->
+            val target = revised.contacts.getOrNull(index)
+            val original = first.contacts.singleOrNull { target != null && target.name.isNotBlank() && canonical(it.name) == canonical(target.name) }
+                ?: first.contacts.getOrNull(index)
+            field in fields && scalar(original, field).isBlank() && scalar(target, field).isNotBlank()
+        } >= 2
+        val improved = revised.reviewIssues.size < first.reviewIssues.size ||
+            (revised.reviewIssues.size == first.reviewIssues.size && moreGrounded)
+        val acceptable = revised.contacts.size >= first.contacts.size && noWorseOwnership &&
+            improved && first.contacts.withIndex().all { preserved(it.index, it.value) }
         return if (acceptable) revised else first.copy(warnings = (first.warnings +
             "Some source assignments still need review; the second read did not safely resolve them.").distinct())
     }
