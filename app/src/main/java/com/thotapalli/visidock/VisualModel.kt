@@ -39,14 +39,15 @@ class VisualModel(private val context: Context, private val gpuLanguage:Boolean=
         idleRelease?.cancel()
         idleRelease=runtimeScope.launch { delay(60_000);extractionMutex.withLock {releaseEngine()} }
     }
-    private suspend fun <T> withVisionFallback(block:suspend (Boolean)->T):T {
+    private suspend fun <T> withVisionFallback(cacheSuccessfulInference:Boolean,block:suspend (Boolean)->T):T {
         val preferences=context.getSharedPreferences("visual-runtime",Context.MODE_PRIVATE)
-        val cpuKey="cpu-vision-0.17.1-$SHA256-${android.os.Build.FINGERPRINT.hashCode()}"
+        // Earlier prewarming could persist initialization success without a successful read.
+        val cpuKey="cpu-vision-inference-v2-0.17.1-$SHA256-${android.os.Build.FINGERPRINT.hashCode()}"
         if(preferences.getBoolean(cpuKey,false)) return block(true)
         return try {block(false)} catch(e:LiteRtLmJniException) {
             currentCoroutineContext().ensureActive()
             if(!VisualRuntimePolicy.canRetryVisionOnCpu(e.message.orEmpty())) throw e
-            block(true).also {preferences.edit().putBoolean(cpuKey,true).apply()}
+            block(true).also {if(cacheSuccessfulInference) preferences.edit().putBoolean(cpuKey,true).apply()}
         }
     }
     /** Initialize weights only. No photo encoding, conversation or inference runs before OCR. */
@@ -60,7 +61,7 @@ class VisualModel(private val context: Context, private val gpuLanguage:Boolean=
                 requireSupportedDevice()
                 check(installed()) {"Download visual reading in Settings first."}
                 idleRelease?.cancel()
-                withVisionFallback {cpuVision->prepareEngine(cpuVision,imageCount)}
+                withVisionFallback(cacheSuccessfulInference=false) {cpuVision->prepareEngine(cpuVision,imageCount)}
                 scheduleIdleRelease()
                 succeeded=true
             }
@@ -141,7 +142,7 @@ class VisualModel(private val context: Context, private val gpuLanguage:Boolean=
         check(installed()) { "Download visual reading in Settings first." }
         require(front.isFile && (back == null || back.isFile)) { "The card photograph is no longer available." }
         idleRelease?.cancel()
-        withVisionFallback {cpuVision->infer(front,back,frontText,backText,localHints,cpuVision,ocrEvidence)}
+        withVisionFallback(cacheSuccessfulInference=true) {cpuVision->infer(front,back,frontText,backText,localHints,cpuVision,ocrEvidence)}
         }
         succeeded = true
         result
@@ -183,7 +184,6 @@ class VisualModel(private val context: Context, private val gpuLanguage:Boolean=
         try {
             engine.initialize()
             currentCoroutineContext().ensureActive()
-            requireMemory(true,imageCount)
             warmEngine=engine;warmCpuVision=cpuVision;warmImageCount=imageCount
             return engine
         } catch(e:LinkageError) {
@@ -247,7 +247,7 @@ class VisualModel(private val context: Context, private val gpuLanguage:Boolean=
                     VisualExtraction.parse(completeJson ?: result.toString(), frontText, backText, ocrEvidence)
                 }
             }
-                val first = read(Contents.of(contents))
+                val first = SourceAssignments.auditCompleteness(read(Contents.of(contents)))
                 if(BuildConfig.DEMO) evaluationObserver?.invoke("initial",first)
                 stage("json_complete")
                 val repairPrompt = SourceAssignments.repairPrompt(first)
@@ -258,7 +258,7 @@ class VisualModel(private val context: Context, private val gpuLanguage:Boolean=
                     stage("assignment_review")
                     val repairStarted = android.os.SystemClock.elapsedRealtime()
                     var repaired = false
-                    try { SourceAssignments.preferRepair(first, read(Contents.of(contents + Content.Text(repairPrompt)))).also { repaired = true } }
+                    try { SourceAssignments.preferRepair(first, SourceAssignments.auditCompleteness(read(Contents.of(contents + Content.Text(repairPrompt))))).also { repaired = true } }
                     catch (e: kotlinx.coroutines.CancellationException) { throw e }
                     catch (e: Exception) {
                         currentCoroutineContext().ensureActive()

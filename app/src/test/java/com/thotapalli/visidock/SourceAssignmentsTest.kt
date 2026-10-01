@@ -4,6 +4,40 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class SourceAssignmentsTest {
+    @Test fun consumedOrIgnoredOcrCannotHideMissingNameRoleAndAddressFromAudit() {
+        val input=evidence("Mira Sen", "Design Director", "Northline", "12 Lake Road")
+        val first=read("""{"contacts":[{"kind":"company","company":"Northline"}],"ignoredSources":{"F1":"footer","F2":"footer","F4":"footer"}}""", input)
+        assertTrue(first.reviewIssues.isEmpty()) // Reproduces the earlier silent omission.
+        val audited=SourceAssignments.auditCompleteness(first)
+        assertTrue(audited.reviewIssues.map {it.field}.containsAll(listOf("name","role","address")))
+        assertNotNull(SourceAssignments.repairPrompt(audited))
+        val repaired=SourceAssignments.auditCompleteness(read("""{"contacts":[{"name":"Mira Sen","role":"Design Director","company":"Northline","address":"12 Lake Road"}]}""",input))
+        val accepted=SourceAssignments.preferRepair(audited,repaired)
+        val form=ScanReconciliation.reconcile(accepted,Card(id="draft"),emptyList(),emptyMap(),emptyList(),emptyList(),0,null,"scan").cards.single()
+        assertEquals("Mira Sen",form.name)
+        assertEquals("Design Director",form.role)
+        assertEquals("12 Lake Road",form.address)
+    }
+
+    @Test fun singleGroundedNameImprovementIsNotDiscardedForUnrelatedReviewIssue() {
+        val input=evidence("Mira Sen","Northline","A long marketing slogan")
+        val issue=ExtractionReviewIssue(0,"unassigned","Review footer",listOf("F3"))
+        val first=read("""{"contacts":[{"company":"Northline"}]}""",input).copy(reviewIssues=listOf(issue))
+        val repaired=read("""{"contacts":[{"name":"Mira Sen","company":"Northline"}]}""",input).copy(reviewIssues=listOf(issue))
+        assertEquals("Mira Sen",SourceAssignments.preferRepair(first,repaired).contacts.single().name)
+        assertTrue(SourceAssignments.preferRepair(first,repaired.copy(sources=emptyList())).contacts.single().name.isBlank())
+    }
+
+    @Test fun completenessAuditDoesNotInventAbsentFieldsOrAlterExistingValues() {
+        val input=evidence("Northline", "www.northline.example")
+        val first=read("""{"contacts":[{"kind":"company","company":"Northline","websites":["www.northline.example"]}]}""",input)
+        val audited=SourceAssignments.auditCompleteness(first)
+        assertEquals(first.contacts,audited.contacts)
+        val result=SourceAssignments.preferRepair(audited,audited)
+        assertEquals(first.contacts,result.contacts)
+        assertTrue(result.contacts.single().name.isBlank())
+    }
+
     @Test fun exactPrintedLabelsDoNotTriggerAnotherModelRead() {
         val result=read("""{"contacts":[{"name":"Arjun Mehta","role":"Sales Manager","company":"Northline",
             "emails":["arjun@northline.example"],"websites":["www.northline.example"],"address":"12 Lake Road"}]}""",

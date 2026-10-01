@@ -233,6 +233,19 @@ internal object SourceAssignments {
         return AssignmentResult(json, sources, issues.distinct(), unassigned)
     }
 
+    /** Source coverage is not completeness: a model can classify every line and still omit fields. */
+    fun auditCompleteness(proposal: VisualProposal): VisualProposal {
+        val missing = proposal.contacts.flatMapIndexed { index, card ->
+            if ((card.rawText + card.backRawText).none(Char::isLetter)) emptyList() else
+                listOf("name" to card.name, "role" to card.role, "company" to card.company, "address" to card.address)
+                    .filter { (field, value) -> value.isBlank() && proposal.reviewIssues.none {
+                        it.contactIndex == index && it.field == field
+                    } }.map { (field, _) -> ExtractionReviewIssue(index, field,
+                        "The $field field is empty. Reinspect both photographs and complete OCR for an omitted value. Leave it empty only if genuinely absent or unreadable; do not guess.") }
+        }
+        return proposal.copy(reviewIssues=(proposal.reviewIssues + missing).distinct())
+    }
+
     fun repairPrompt(proposal: VisualProposal): String? {
         if (proposal.reviewIssues.isEmpty()) return null
         val issues = JSONArray()
@@ -285,7 +298,7 @@ internal object SourceAssignments {
             val original = first.contacts.singleOrNull { target != null && target.name.isNotBlank() && canonical(it.name) == canonical(target.name) }
                 ?: first.contacts.getOrNull(index)
             field in fields && scalar(original, field).isBlank() && scalar(target, field).isNotBlank()
-        } >= 2
+        } >= 1
         val improved = revised.reviewIssues.size < first.reviewIssues.size ||
             (revised.reviewIssues.size == first.reviewIssues.size && moreGrounded)
         val acceptable = revised.contacts.size >= first.contacts.size && noWorseOwnership &&

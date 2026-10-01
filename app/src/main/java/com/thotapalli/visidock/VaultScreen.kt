@@ -214,28 +214,11 @@ private val destinations = listOf(Destination("Collection", Icons.Outlined.Style
             containerColor=Color.Transparent,
             contentColor=MaterialTheme.colorScheme.onBackground,
             snackbarHost={ SnackbarHost(snackbar) },
-            bottomBar={ Column {
-                // A measured action shelf participates in Scaffold padding; it never floats
-                // over case captions, search results, selection controls or detail text.
-                AnimatedVisibility(showNav && tab < 2 && state.busy==null,
-                    enter=expandVertically(DockMotion.settle(480f,1f))+fadeIn(DockMotion.spec(140)),
-                    exit=shrinkVertically(DockMotion.spec(180))+fadeOut(DockMotion.spec(90))) {
-                    Surface(color=MaterialTheme.colorScheme.surface) {
-                        Row(Modifier.fillMaxWidth()
-                            .then(if(rail) Modifier.windowInsetsPadding(WindowInsets.navigationBars.only(WindowInsetsSides.Bottom)) else Modifier)
-                            .padding(start=if(rail) 100.dp else 20.dp,end=20.dp,top=10.dp,bottom=10.dp),
-                            horizontalArrangement=Arrangement.End) {
-                            DockExtendedFloatingActionButton(elevation=FloatingActionButtonDefaults.elevation(0.dp,0.dp,0.dp,0.dp),
-                                onClick={add=true},modifier=Modifier.semantics {contentDescription="Add card"},
-                                icon={Icon(Icons.Outlined.Add,null)},text={Text("Add card")},
-                                containerColor=MaterialTheme.colorScheme.primary,contentColor=MaterialTheme.colorScheme.onPrimary)
-                        }
-                    }
-                }
+            bottomBar={
                 AnimatedVisibility(showNav && !rail,enter=expandVertically(DockMotion.settle(480f,1f),expandFrom=Alignment.Bottom)+fadeIn(DockMotion.spec(120)),exit=shrinkVertically(DockMotion.spec(180),shrinkTowards=Alignment.Bottom)+fadeOut(DockMotion.spec(100))) {NavigationBar(containerColor=MaterialTheme.colorScheme.surface) {
                     destinations.forEachIndexed { index, item -> DockNavigationBarItem(selected=tab==index, onClick={navigate(index)}, icon={ Icon(item.icon, null) }, label={ Text(item.title) }) }
                 }}
-            } }
+            }
 
         ) { padding ->
             Row(Modifier.fillMaxSize().padding(padding).consumeWindowInsets(padding)) {
@@ -358,6 +341,7 @@ private val destinations = listOf(Destination("Collection", Icons.Outlined.Style
         }
     }
     BoxWithConstraints(modifier.fillMaxHeight()) {
+    val compactAdd=maxWidth < 360.dp || LocalDensity.current.fontScale > 1.3f
     val compactHeader=!compact || maxHeight < 500.dp || LocalDensity.current.fontScale > 1.3f
     Column(Modifier.fillMaxSize()) {
         Surface(color=Color(0xFF102C60),contentColor=Color(0xFFF4F8FF),shape=androidx.compose.foundation.shape.RoundedCornerShape(bottomStart=24.dp,bottomEnd=24.dp)) {
@@ -388,9 +372,17 @@ private val destinations = listOf(Destination("Collection", Icons.Outlined.Style
                 (slideInVertically(DockMotion.spec(160)) {if(targetState>initialState) it else -it}+fadeIn(DockMotion.spec(120))) togetherWith (slideOutVertically(DockMotion.spec(100)) {if(targetState>initialState) -it else it}+fadeOut(DockMotion.spec(80)))
             }) {count->Text("$count ${if(count==1) "card" else "cards"}",color=MaterialTheme.colorScheme.onSurfaceVariant,style=MaterialTheme.typography.bodyMedium)}
         }
-        Row(Modifier.fillMaxWidth().padding(horizontal=24.dp),horizontalArrangement=Arrangement.spacedBy(8.dp)) {
+        Row(Modifier.fillMaxWidth().padding(horizontal=24.dp),horizontalArrangement=Arrangement.spacedBy(8.dp),verticalAlignment=Alignment.CenterVertically) {
             DockFilterChip(selected=!compact,onClick={onCompact(false)},label={Text("Case")})
             DockFilterChip(selected=compact,onClick={onCompact(true)},label={Text("List")})
+            Spacer(Modifier.weight(1f))
+            if(compactAdd) DockIconButton(onClick=onAdd,enabled=state.busy==null) {
+                Icon(Icons.Outlined.Add,"Add card")
+            } else DockButton(onClick=onAdd,enabled=state.busy==null) {
+                Icon(Icons.Outlined.Add,null,Modifier.size(18.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("Add card",maxLines=1)
+            }
         }
         if(collections.isNotEmpty() || collectionFilter!=null) Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal=24.dp),horizontalArrangement=Arrangement.spacedBy(8.dp)) {
             DockFilterChip(collectionFilter==null,{collectionFilter=null},label={Text("All collections")})
@@ -401,18 +393,18 @@ private val destinations = listOf(Destination("Collection", Icons.Outlined.Style
             when(content.phase) {
                 "loading" -> CollectionLoading()
                 "empty" -> if(!favorites && query.isBlank() && !compact) {
-                    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(bottom=100.dp)) {EmptyCardCase(onAdd,ownerName=state.session?.displayName.orEmpty())}
+                    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(bottom=24.dp)) {EmptyCardCase(onAdd,ownerName=state.session?.displayName.orEmpty())}
                 } else EmptyState(if(query.isNotBlank()) Icons.Outlined.SearchOff else Icons.Outlined.Style,
                     if(query.isNotBlank()) "No matching cards" else if(favorites) "No favorites yet" else "No cards yet",
                     if(query.isNotBlank()) "Try fewer words, a company name or something you wrote in your notes." else if(favorites) "Tap the star on a card to keep it here." else "Scan a visiting card or enter its details.",
                     Modifier.fillMaxSize(),action=if(!favorites && query.isBlank()) onAdd else null,actionLabel="Add your first card")
                 else -> if(!compact) {
-                    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(bottom=100.dp)) {
+                    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(bottom=24.dp)) {
                         CardCase(content.cards,caseFocusId,onCaseFocus,{onCaseFocus(it.id);vm.select(it)},vm::favorite,state.busy!=null,ownerName=state.session?.displayName.orEmpty()) {card->
                             CasePhoto(card,vm)
                         }
                     }
-                } else LazyColumn(Modifier.fillMaxSize(),state=listState,contentPadding=PaddingValues(start=24.dp,end=24.dp,bottom=104.dp)) {
+                } else LazyColumn(Modifier.fillMaxSize(),state=listState,contentPadding=PaddingValues(start=24.dp,end=24.dp,bottom=24.dp)) {
                     items(content.cards,key={it.id}) {card->
                         Column(Modifier.animateItem(fadeInSpec=DockMotion.spec(140),placementSpec=DockMotion.settle(480f,.96f),fadeOutSpec=DockMotion.spec(90))) {
                             CardRow(card,vm,state.selectedId==card.id,{vm.select(card)},{vm.favorite(card)},state.busy!=null)

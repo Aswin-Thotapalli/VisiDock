@@ -9,7 +9,6 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.currentCoroutineContext
-import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -402,18 +401,8 @@ class VaultViewModel(application: Application, private val saved: SavedStateHand
         return ScanFiles(File(original),File(checkNotNull(saved.get<String>(if(back) "backPreview" else "preview"))),checkNotNull(saved.get<String>(if(back) "backMime" else "mime")),"")
     }
     fun readCapturedSides(waitForPresentation:Boolean=false) = operation("Reading front…",180_000) {
-        coroutineScope {
         val front=checkNotNull(preparedSide(false)) {"Add the front of the card first."}
         val back=preparedSide(true)
-        // Final side count is known. Weight initialization overlaps OCR, but photo inference
-        // waits for both sides and this child; cancellation cannot leave an orphan initializer.
-        val prewarm=if(visualModel.installed()) launch {
-            try {visualModel.prewarm(if(back==null) 1 else 2)}
-            catch(e:CancellationException) {throw e}
-            catch(_:Exception) { /* Optional optimization; normal extraction retains its fallback. */ }
-        } else null
-        var finished=false
-        try {
         saved["captureReview"]=true
         scanPresentation=if(waitForPresentation) kotlinx.coroutines.CompletableDeferred() else null
         update {it.copy(scanSide=0,scanPreview=front.preview.path,scanRegions=emptyList(),scanAnalysisReady=false)}
@@ -431,7 +420,6 @@ class VaultViewModel(application: Application, private val saved: SavedStateHand
             }
         }
         update {it.copy(busy="Understanding your card…",scanSide=2,scanPreview=back?.preview?.path ?: front.preview.path)}
-        prewarm?.join()
         analyzePrepared(frontRead.text,backRead?.text.orEmpty())
         update {it.copy(scanAnalysisReady=true,busy="Details ready for review")}
         // Computation runs independently of the optical presentation. Only a fast
@@ -439,12 +427,6 @@ class VaultViewModel(application: Application, private val saved: SavedStateHand
         scanPresentation?.let {kotlinx.coroutines.withTimeoutOrNull(20_000) {it.await()}}
         saved["captureReview"]=false
         update {it.copy(captureReview=false)}
-        finished=true
-        } finally {
-            prewarm?.cancel()
-            if(!finished) visualModel.release()
-        }
-        }
     }
     fun reviewCapturedManually() {
         if(state.value.busy!=null || !state.value.captureReview) return
