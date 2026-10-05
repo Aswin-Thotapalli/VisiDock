@@ -29,6 +29,11 @@ class RecognitionQualityTest {
         assertEquals(setOf("stage", "elapsedMs", "success", "width", "height", "regions"), json.keys().asSequence().toSet())
         assertEquals(320, json.getInt("elapsedMs"))
     }
+    @Test fun fieldPresenceDiagnosticsRemainNumericAndBounded() {
+        val json=RecognitionTiming(RecognitionStage.ModelRepairFields,0,true,fieldMasks=listOf(1,127,255)).json()
+        assertEquals(setOf("stage","elapsedMs","success","width","height","regions","fieldMasks"),json.keys().asSequence().toSet())
+        assertEquals("[1,127,127]",json.getJSONArray("fieldMasks").toString())
+    }
     @Test fun QualityWarningsSurviveBothSidesAndPersistence() {
         val evidence = OcrEvidence(qualityWarnings=listOf("Memory limited this read"))
         val combined = OcrEvidence.combine(evidence, evidence)

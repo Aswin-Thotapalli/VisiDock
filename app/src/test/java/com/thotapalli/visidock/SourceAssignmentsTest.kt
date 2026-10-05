@@ -104,7 +104,10 @@ class SourceAssignmentsTest {
         val unsafe = revised.copy(reviewIssues=listOf(ExtractionReviewIssue(0,"ownership","Unassigned person",listOf("F3"))))
         assertEquals(first.contacts, SourceAssignments.preferRepair(first,unsafe).contacts)
         val withPhone = first.copy(contacts=listOf(first.contacts.single().copy(phone="9876543210")))
-        assertEquals(withPhone.contacts, SourceAssignments.preferRepair(withPhone,revised).contacts)
+        val recovered=SourceAssignments.preferRepair(withPhone,revised).contacts.single()
+        assertEquals("9876543210",recovered.phone)
+        assertEquals("Design Director",recovered.role)
+        assertEquals("12 Lake Road\nBengaluru 560001",recovered.address)
         val invented = revised.copy(sources=emptyList())
         assertEquals(first.contacts, SourceAssignments.preferRepair(first,invented).contacts)
     }

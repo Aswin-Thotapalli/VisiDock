@@ -248,6 +248,7 @@ class VisualModel(private val context: Context, private val gpuLanguage:Boolean=
                 }
             }
                 val first = SourceAssignments.auditCompleteness(read(Contents.of(contents)))
+                RecognitionDiagnostics.fields(context,RecognitionStage.ModelInitialFields,first)
                 if(BuildConfig.DEMO) evaluationObserver?.invoke("initial",first)
                 stage("json_complete")
                 val repairPrompt = SourceAssignments.repairPrompt(first)
@@ -258,7 +259,11 @@ class VisualModel(private val context: Context, private val gpuLanguage:Boolean=
                     stage("assignment_review")
                     val repairStarted = android.os.SystemClock.elapsedRealtime()
                     var repaired = false
-                    try { SourceAssignments.preferRepair(first, SourceAssignments.auditCompleteness(read(Contents.of(contents + Content.Text(repairPrompt))))).also { repaired = true } }
+                    try {
+                        val revised=SourceAssignments.auditCompleteness(read(Contents.of(contents + Content.Text(repairPrompt))))
+                        RecognitionDiagnostics.fields(context,RecognitionStage.ModelRepairFields,revised)
+                        SourceAssignments.preferRepair(first,revised).also { repaired = true }
+                    }
                     catch (e: kotlinx.coroutines.CancellationException) { throw e }
                     catch (e: Exception) {
                         currentCoroutineContext().ensureActive()
@@ -272,6 +277,7 @@ class VisualModel(private val context: Context, private val gpuLanguage:Boolean=
             stage("conversation_closed")
             VisualExtraction.requireUsable(proposal)
             stage("completed")
+            RecognitionDiagnostics.fields(context,RecognitionStage.ReviewFields,proposal)
             if(BuildConfig.DEMO) evaluationObserver?.invoke("completed",proposal)
             // Keep weights warm for a short capture batch; conversations always close above.
             // Idle expiry frees memory without retaining a user's inference context.

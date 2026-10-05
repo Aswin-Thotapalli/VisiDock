@@ -21,18 +21,27 @@ object RecognitionPreferences {
     }
 }
 
-enum class RecognitionStage { Prepare, Decode, OcrFull, OcrDetail, VisualPrewarm, VisualModel, AssignmentReview }
+enum class RecognitionStage { Prepare, Decode, OcrFull, OcrDetail, VisualPrewarm, VisualModel, AssignmentReview, ModelInitialFields, ModelRepairFields, ReviewFields, FormFields }
 data class RecognitionTiming(val stage: RecognitionStage, val elapsedMillis: Long, val success: Boolean,
-    val width: Int = 0, val height: Int = 0, val regionCount: Int = 0) {
+    val width: Int = 0, val height: Int = 0, val regionCount: Int = 0, val fieldMasks: List<Int> = emptyList()) {
     fun json() = JSONObject().put("stage", stage.name).put("elapsedMs", elapsedMillis.coerceAtLeast(0))
         .put("success", success).put("width", width.coerceAtLeast(0)).put("height", height.coerceAtLeast(0))
         .put("regions", regionCount.coerceAtLeast(0))
+        .also { if(fieldMasks.isNotEmpty()) it.put("fieldMasks",JSONArray(fieldMasks.take(12).map {mask->mask and 127})) }
 }
 
 /** Explicitly opt-in, local only. Schema cannot accept contact text, image paths, exceptions or identifiers. */
 object RecognitionDiagnostics {
     internal val lock = Any()
     private fun file(context: Context) = File(context.noBackupFilesDir, "recognition-timings.json")
+    /** Presence bits only: name, role, company, address, phones, emails, websites. No values. */
+    fun fields(context:Context,stage:RecognitionStage,proposal:VisualProposal) {
+        record(context,RecognitionTiming(stage,0,true,fieldMasks=proposal.contacts.map {card ->
+            listOf(card.name.isNotBlank(),card.role.isNotBlank(),card.company.isNotBlank(),card.address.isNotBlank(),
+                card.contactPhones.isNotEmpty(),card.contactEmails.isNotEmpty(),card.contactWebsites.isNotEmpty())
+                .foldIndexed(0) {index,mask,present -> if(present) mask or (1 shl index) else mask}
+        }))
+    }
     fun clear(context: Context) = synchronized(lock) { file(context).delete(); Unit }
     fun record(context: Context, timing: RecognitionTiming) = synchronized(lock) {
         if (!RecognitionPreferences.diagnosticsEnabled(context)) return@synchronized

@@ -467,6 +467,17 @@ class VaultViewModel(application: Application, private val saved: SavedStateHand
         analyzePrepared(frontText,backText)
     }
     fun readPhotosAgain() = readCapturedSides(waitForPresentation=true)
+    /** A failed visual read must not create a successful, partially populated AI baseline. */
+    internal fun failVisualRead(cause:Exception):Nothing {
+        val reason=if(cause is VisualReadingUnavailableException) cause.message.orEmpty()
+            else "Visual reading could not finish on this device."
+        val message="$reason Your photos, recognized text and existing details are kept. Retry reading, or choose Enter details instead."
+        visualModel.release()
+        saved["captureReview"]=true
+        setWarnings((state.value.extractionWarnings+message+scanEvidence().reviewWarnings).distinct())
+        update {it.copy(captureReview=true,scanAnalysisReady=false)}
+        throw IllegalStateException(message)
+    }
     private suspend fun analyzePrepared(frontText:String,backText:String) {
         val front=File(checkNotNull(saved.get<String>("preview")))
         val reverse=saved.get<String>("backPreview")?.let(::File)
@@ -486,7 +497,7 @@ class VaultViewModel(application: Application, private val saved: SavedStateHand
                 visualModel.extract(front,reverse,frontText,backText,hints,scanEvidence())
             }
             catch(e: CancellationException) { throw e }
-            catch(e: Exception) { usedFallback=true; VisualProposal(listOf(CardLogic.extract(frontText+"\n"+backText).copy(name="",rawText=frontText.take(12000),backRawText=backText.take(12000))),listOf(if(e is VisualReadingUnavailableException) e.message.orEmpty() else "Visual reading could not finish on this device. Check the photographs and enter the details, or retry.")) }
+            catch(e: Exception) { failVisualRead(e) }
         } else {usedFallback=true;VisualProposal(listOf(CardLogic.extract(frontText+"\n"+backText).copy(name="",rawText=frontText.take(12000),backRawText=backText.take(12000))),listOf("Visual reading is not installed. Download it in Settings to identify people from the photograph. These are basic text suggestions."))}
         if(usedFallback && baselines.isNotEmpty()) {
             setWarnings((state.value.extractionWarnings+result.warnings+scanEvidence().reviewWarnings+
@@ -501,6 +512,7 @@ class VaultViewModel(application: Application, private val saved: SavedStateHand
         update {it.copy(ownCardChoiceRequired=saved.get<Boolean>("ownCardChoiceRequired")==true)}
         setPending(reconciled.cards.drop(1));setWarnings((reconciled.warnings+scanEvidence().reviewWarnings).distinct())
         setDraft(reconciled.cards.first())
+        RecognitionDiagnostics.fields(getApplication(),RecognitionStage.FormFields,VisualProposal(reconciled.cards,emptyList()))
         setReview(reconciled.sources,reconciled.issues,0)
         update { it.copy(draftPreview=front.path,draftBackPreview=reverse?.path) }
     }

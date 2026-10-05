@@ -29,6 +29,6 @@ import kotlinx.coroutines.withContext
         DropdownMenu(expanded,{expanded=false}) {OcrScript.entries.forEach {value->DockDropdownMenuItem(text={Text(value.name)},onClick={script=value;RecognitionPreferences.setScript(context,value);expanded=false})}}
     }
     Text("Auto follows your device language. Choose the card’s script when it differs. Latin, Devanagari, Chinese, Japanese and Korean are supported; original text is retained.",style=MaterialTheme.typography.bodySmall)
-    Row {Column(Modifier.weight(1f)) {Text("Private performance diagnostics");Text("Off by default. Keeps processing times on this device without card text or photos. Export only when you choose.",style=MaterialTheme.typography.bodySmall)};DockSwitch(diagnostics,{diagnostics=it;RecognitionPreferences.setDiagnosticsEnabled(context,it)})}
+    Row {Column(Modifier.weight(1f)) {Text("Private performance diagnostics");Text("Off by default. Keeps processing times and which fields were filled at each step, without their values, card text or photos. Export only when you choose.",style=MaterialTheme.typography.bodySmall)};DockSwitch(diagnostics,{diagnostics=it;RecognitionPreferences.setDiagnosticsEnabled(context,it)})}
     if(diagnostics) DockTextButton(onClick={output.launch("VisiDock-diagnostics.json")}) {Text("Export diagnostics")}
 }

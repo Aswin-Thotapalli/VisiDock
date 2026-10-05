@@ -264,15 +264,16 @@ internal object SourceAssignments {
 
     /** A corrective pass may not erase a person or a previously read contact channel. */
     fun preferRepair(first: VisualProposal, revised: VisualProposal): VisualProposal {
+        val correspondence=RepairReconciliation.correspondence(first,revised,allowOriginalOwnership=true)
         fun preserved(index: Int, original: Card): Boolean {
-            val target = revised.contacts.singleOrNull { original.name.isNotBlank() &&
-                canonical(it.name) == canonical(original.name) } ?: revised.contacts.getOrNull(index) ?: return false
+            val target = correspondence[index]?.let {revised.contacts[it]} ?: return false
             val phones = target.contactPhones.map { it.number.filter(Char::isDigit) }.toSet()
             val unchangedFields = listOf("name" to (original.name to target.name), "role" to (original.role to target.role),
                 "company" to (original.company to target.company), "address" to (original.address to target.address))
-                .filter { (field, _) -> first.reviewIssues.none { it.contactIndex == index && it.field == field } }
-            return unchangedFields.all { (_, values) -> values.first.isBlank() || values.second.isNotBlank() } &&
+            return unchangedFields.all { (_, values) -> values.first.isBlank() || canonical(values.first)==canonical(values.second) } &&
                 original.contactPhones.all { it.number.filter(Char::isDigit) in phones } &&
+                original.contactPhones.all {phone ->phone.label.isBlank() || target.contactPhones.any {
+                    it.number.filter(Char::isDigit)==phone.number.filter(Char::isDigit) && canonical(it.label)==canonical(phone.label)}} &&
                 original.contactEmails.all { email -> target.contactEmails.any { it.equals(email, true) } } &&
                 original.contactWebsites.all { website -> target.contactWebsites.any { it.equals(website, true) } }
         }
@@ -284,7 +285,7 @@ internal object SourceAssignments {
         val originalOwnership = first.reviewIssues.filter { it.field == "ownership" }
         val revisedOwnership = revised.reviewIssues.filter { it.field == "ownership" }
         val noWorseOwnership = revisedOwnership.size <= originalOwnership.size && revisedOwnership.all { issue ->
-            originalOwnership.any { old -> old.contactIndex == issue.contactIndex &&
+            originalOwnership.any { old -> correspondence[old.contactIndex] == issue.contactIndex &&
                 issue.sourceIds.toSet().let { ids -> if (ids.isEmpty()) old.sourceIds.isEmpty() && old.reason == issue.reason
                     else old.sourceIds.containsAll(ids) } }
         }
@@ -295,15 +296,18 @@ internal object SourceAssignments {
         }.orEmpty()
         val moreGrounded = groundedFields(revised).count { (index, field) ->
             val target = revised.contacts.getOrNull(index)
-            val original = first.contacts.singleOrNull { target != null && target.name.isNotBlank() && canonical(it.name) == canonical(target.name) }
-                ?: first.contacts.getOrNull(index)
+            val original = correspondence.entries.singleOrNull {it.value==index}?.key?.let {first.contacts[it]}
             field in fields && scalar(original, field).isBlank() && scalar(target, field).isNotBlank()
         } >= 1
         val improved = revised.reviewIssues.size < first.reviewIssues.size ||
             (revised.reviewIssues.size == first.reviewIssues.size && moreGrounded)
         val acceptable = revised.contacts.size >= first.contacts.size && noWorseOwnership &&
             improved && first.contacts.withIndex().all { preserved(it.index, it.value) }
-        return if (acceptable) revised else first.copy(warnings = (first.warnings +
+        if (acceptable) return revised
+        // A repair can recover an identity/address while omitting an unrelated channel.
+        // Keep independently supported fields instead of rejecting the entire second read.
+        val merged=RepairReconciliation.merge(first,revised)
+        return if(merged!=first) merged else first.copy(warnings = (first.warnings +
             "Some source assignments still need review; the second read did not safely resolve them.").distinct())
     }
 }
